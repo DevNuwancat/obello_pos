@@ -45,11 +45,13 @@ export const useAuthStore = defineStore("auth", {
 
     // Get role + name from public.users table
     async fetchProfile() {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("users")
         .select("*")
         .eq("id", this.user.id)
-        .single();
+        .maybeSingle();
+      if (error) console.error("fetchProfile failed:", error.message)
+      console.log("fetchProfile data:", data)
       this.profile = data;
     },
 

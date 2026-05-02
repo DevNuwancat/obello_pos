@@ -1,19 +1,23 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
+import { useAuthStore } from "../store/auth"
 
+
+
+const auth = useAuthStore()
 // ── THEME ──
 // isLight still lives here because .pos-wrap needs the .light class
 const isLight = ref(localStorage.getItem('theme') === 'light')
 
 // ── PRODUCTS (placeholder until connected to Supabase) ──
 const PRODUCTS = [
-  { id: 1, name: 'Linen Relaxed Trousers', sku: 'OB-LT-001', barcode: '6941234560011', price: 3200, category: 'Bottoms',   stock: 14 },
-  { id: 2, name: 'Oversized Poplin Shirt',  sku: 'OB-PS-002', barcode: '6941234560022', price: 2800, category: 'Tops',      stock: 8  },
-  { id: 3, name: 'Wool Blend Overcoat',     sku: 'OB-OC-003', barcode: '6941234560033', price: 8500, category: 'Outerwear', stock: 5  },
-  { id: 4, name: 'Wide Leg Denim',          sku: 'OB-WD-004', barcode: '6941234560044', price: 3800, category: 'Bottoms',   stock: 11 },
-  { id: 5, name: 'Cotton Rib Tee',          sku: 'OB-CT-005', barcode: '6941234560055', price: 1400, category: 'Tops',      stock: 22 },
-  { id: 6, name: 'Merino Knit Sweater',     sku: 'OB-MK-006', barcode: '6941234560066', price: 4200, category: 'Knitwear',  stock: 7  },
+  { id: 1, name: 'Linen Relaxed Trousers', sku: 'OB-LT-001', barcode: '6941234560011', price: 3200, category: 'Bottoms',   stock: 14, image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 3000, royalDiscount: 2600 },
+  { id: 2, name: 'Oversized Poplin Shirt',  sku: 'OB-PS-002', barcode: '6941234560022', price: 2800, category: 'Tops',      stock: 8,  image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 2600, royalDiscount: 2200 },
+  { id: 3, name: 'Wool Blend Overcoat',     sku: 'OB-OC-003', barcode: '6941234560033', price: 8500, category: 'Outerwear', stock: 5,  image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 8000, royalDiscount: 7200 },
+  { id: 4, name: 'Wide Leg Denim',          sku: 'OB-WD-004', barcode: '6941234560044', price: 3800, category: 'Bottoms',   stock: 11, image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 3500, royalDiscount: 3000 },
+  { id: 5, name: 'Cotton Rib Tee',          sku: 'OB-CT-005', barcode: '6941234560055', price: 1400, category: 'Tops',      stock: 22, image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 1200, royalDiscount: 1000 },
+  { id: 6, name: 'Merino Knit Sweater',     sku: 'OB-MK-006', barcode: '6941234560066', price: 4200, category: 'Knitwear',  stock: 7,  image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 3900, royalDiscount: 3400 },
 ]
 
 // ── CART STATE ──
@@ -30,6 +34,20 @@ const barcodeInput   = ref('')
 const barcodeSuccess = ref(false)
 const barcodeFail    = ref(false)
 const showDropdown = ref(false)
+const previewImg = ref('')
+const previewX   = ref(0)
+const previewY   = ref(0)
+
+function showImgPreview(e: MouseEvent, item: any) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  previewImg.value = item.image
+  previewX.value   = rect.right + 14
+  previewY.value   = rect.top + rect.height / 2 - 110
+}
+
+function hideImgPreview() {
+  previewImg.value = ''
+}
 
 // ── SEARCH RESULTS ──
 const searchResults = computed(() => {
@@ -44,12 +62,16 @@ const searchResults = computed(() => {
 const today = new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' })
 
 // ── CALCULATIONS ──
-const subtotal    = computed(() => cart.value.reduce((s, i) => s + i.price * i.qty, 0))
+const subtotal    = computed(() => cart.value.reduce((s, i) => s + i.activePrice * i.qty, 0))
 const discountAmt = computed(() => discount.value ? (subtotal.value * discount.value) / 100 : 0)
 const total       = computed(() => subtotal.value - discountAmt.value)
 const balance     = computed(() => amountPaid.value ? Math.max(0, amountPaid.value - total.value) : 0)
 const totalQty    = computed(() => cart.value.reduce((s, i) => s + i.qty, 0))
-const canCheckout = computed(() => cart.value.length > 0 && !checkoutDone.value)
+const canCheckout = computed(() => {
+  if (cart.value.length === 0 || checkoutDone.value) return false
+  if (payMethod.value === 'Later Pay') return true
+  return amountPaid.value > 0 && amountPaid.value >= total.value
+})
 
 // ── FORMAT CURRENCY ──
 const fmt = (n: number) => `Rs. ${n.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -67,9 +89,18 @@ function addToCart(product: any) {
   if (existing) {
     existing.qty++
   } else {
-    cart.value.push({ ...product, qty: 1 })
+    cart.value.push({ ...product, qty: 1, priceMode: 'discount', activePrice: product.discount })
   }
   showToast(`${product.name} added`)
+}
+
+function setPriceMode(id: number, mode: string) {
+  const item = cart.value.find(i => i.id === id)
+  if (!item) return
+  item.priceMode = mode
+  if (mode === 'discount')      item.activePrice = item.discount
+  else if (mode === 'royal')    item.activePrice = item.royalDiscount
+  else                          item.activePrice = item.price
 }
 
 function updateQty(id: number, delta: number) {
@@ -195,11 +226,17 @@ function handleCheckout() {
               class="dropdown-item"
               @mousedown="pickFromSearch(p)"
             >
-              <div>
+              <img :src="p.image" class="dropdown-img" />
+              <div class="dropdown-info">
                 <div class="dropdown-name">{{ p.name }}</div>
                 <div class="dropdown-meta">{{ p.sku }} · {{ p.category }}</div>
               </div>
-              <div class="dropdown-price">Rs. {{ p.price.toLocaleString() }}</div>
+              <div class="dropdown-right">
+                <div class="dropdown-price">Rs. {{ p.price.toLocaleString() }}</div>
+                <div class="dropdown-stock" :class="{ 'low-stock': p.stock < 4 }">
+                  {{ p.stock }} in stock
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -218,7 +255,9 @@ function handleCheckout() {
         <!-- Cart table -->
         <div v-else>
           <div class="cart-header">
+            <span></span>
             <span>Item</span>
+            <span></span>
             <span>Qty</span>
             <span style="text-align:right">Price</span>
             <span></span>
@@ -228,9 +267,24 @@ function handleCheckout() {
             :key="item.id"
             class="cart-row"
           >
+            <div class="cart-img-wrap"
+              @mouseenter="(e) => showImgPreview(e, item)"
+              @mouseleave="hideImgPreview"
+            >
+              <img :src="item.image" class="cart-img" />
+            </div>
             <div>
               <div class="cart-name">{{ item.name }}</div>
               <div class="cart-sku">{{ item.sku }}</div>
+            </div>
+            <div class="price-mode-btns">
+              <button
+                v-for="mode in ['discount', 'royal', 'original']"
+                :key="mode"
+                class="pmode-btn"
+                :class="{ active: item.priceMode === mode }"
+                @click="setPriceMode(item.id, mode)"
+              >{{ mode === 'discount' ? 'Discount' : mode === 'royal' ? 'Super' : 'Original' }}</button>
             </div>
             <div class="qty-control">
               <button class="qty-btn" @click="updateQty(item.id, -1)">
@@ -241,7 +295,10 @@ function handleCheckout() {
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               </button>
             </div>
-            <div class="cart-price">{{ fmt(item.price * item.qty) }}</div>
+            <div class="cart-price-col">
+              <span v-if="item.priceMode !== 'original'" class="cart-original-crossed">{{ fmt(item.price * item.qty) }}</span>
+              <span class="cart-price">{{ fmt(item.activePrice * item.qty) }}</span>
+            </div>
             <button class="remove-btn" @click="removeItem(item.id)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
@@ -270,21 +327,27 @@ function handleCheckout() {
           <span class="summary-discount-val">− {{ fmt(discountAmt) }}</span>
         </div>
         <div class="discount-row">
-          <input
-            v-model.number="discount"
-            class="small-input"
-            placeholder="Discount %"
-            type="number"
-            min="0"
-            max="100"
-          />
-          <input
-            v-model.number="amountPaid"
-            class="small-input"
-            placeholder="Amount paid"
-            type="number"
-            min="0"
-          />
+          <div class="input-field">
+            <label class="input-label">Discount %</label>
+            <input
+              v-model.number="discount"
+              class="small-input"
+              placeholder="0"
+              type="number"
+              min="0"
+              max="100"
+            />
+          </div>
+          <div class="input-field">
+            <label class="input-label">Amount Paid</label>
+            <input
+              v-model.number="amountPaid"
+              class="small-input"
+              placeholder="0"
+              type="number"
+              min="0"
+            />
+          </div>
         </div>
       </div>
 
@@ -331,12 +394,23 @@ function handleCheckout() {
       </div>
 
       <div class="cart-branding">
-        <span class="cart-branding-text">Powered by Obello</span>
+        <span class="cart-branding-text">Powered by Xearch AI</span>
       </div>
     </aside>
 
     <!-- ── TOAST ── -->
     <div class="toast" :class="{ show: toastVisible }">{{ toastMsg }}</div>
+
+    <!-- ── IMAGE PREVIEW ── -->
+    <Transition name="img-pop">
+      <div
+        v-if="previewImg"
+        class="img-preview-fixed"
+        :style="{ top: previewY + 'px', left: previewX + 'px' }"
+      >
+        <img :src="previewImg" class="img-preview-big" />
+      </div>
+    </Transition>
 
   </div>
 </template>
@@ -532,8 +606,8 @@ function handleCheckout() {
 .dropdown-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
+  gap: 12px;
+  padding: 10px 16px;
   cursor: pointer;
   transition: background 0.1s;
   border-bottom: 1px solid var(--border);
@@ -542,9 +616,39 @@ function handleCheckout() {
 .dropdown-item:last-child { border-bottom: none; }
 .dropdown-item:hover { background: var(--bg-hover); }
 
+.dropdown-img {
+  width: 42px;
+  height: 42px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dropdown-info { flex: 1; min-width: 0; }
+
+.dropdown-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .dropdown-name { font-size: 13.5px; font-weight: 500; color: var(--text); }
 .dropdown-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 .dropdown-price { font-size: 13.5px; font-weight: 600; color: var(--text); }
+
+.dropdown-stock {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.dropdown-stock.low-stock {
+  color: #ef4444;
+  font-weight: 600;
+}
 
 /* ── CART AREA ── */
 .cart-area {
@@ -576,7 +680,7 @@ function handleCheckout() {
 
 .cart-header {
   display: grid;
-  grid-template-columns: 1fr 80px 110px 36px;
+  grid-template-columns: 44px 1fr auto 80px 110px 36px;
   gap: 8px;
   padding: 0 0 10px;
   border-bottom: 1px solid var(--border);
@@ -589,12 +693,56 @@ function handleCheckout() {
 
 .cart-row {
   display: grid;
-  grid-template-columns: 1fr 80px 110px 36px;
+  grid-template-columns: 44px 1fr auto 80px 110px 36px;
   gap: 8px;
   padding: 14px 0;
   border-bottom: 1px solid var(--border);
   align-items: center;
   animation: slideIn 0.2s ease;
+}
+
+.cart-img-wrap {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  cursor: zoom-in;
+}
+
+.cart-img {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.img-preview-fixed {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.img-preview-big {
+  width: 220px;
+  height: 220px;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid var(--border-mid);
+  box-shadow: var(--shadow-lg);
+  display: block;
+}
+
+.img-pop-enter-active {
+  transition: opacity 0.18s ease, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.img-pop-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.img-pop-enter-from,
+.img-pop-leave-to {
+  opacity: 0;
+  transform: scale(0.7);
 }
 
 @keyframes slideIn {
@@ -631,7 +779,49 @@ function handleCheckout() {
   text-align: center;
 }
 
+.cart-price-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.cart-original-crossed {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-align: right;
+}
+
 .cart-price { font-size: 13.5px; font-weight: 500; color: var(--text); text-align: right; }
+
+.price-mode-btns {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  justify-content: center;
+}
+
+.pmode-btn {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+  background: transparent;
+  color: var(--text-muted);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.pmode-btn:hover { border-color: var(--border-mid); color: var(--text); }
+.pmode-btn.active { border-color: #22c55e; background: rgba(34,197,94,0.12); color: #22c55e; }
+.pmode-btn.active:nth-child(2) { border-color: #8b5cf6; background: rgba(139,92,246,0.12); color: #8b5cf6; }
+.pmode-btn.active:nth-child(3) { border-color: var(--border-mid); background: var(--bg-card); color: var(--text); }
 
 .remove-btn {
   width: 28px;
@@ -715,6 +905,20 @@ function handleCheckout() {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-top: 4px;
+}
+
+.input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.input-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-weight: 500;
 }
 
 .small-input {
@@ -834,6 +1038,7 @@ function handleCheckout() {
 }
 
 .checkbox.checked { border-color: var(--text); background: var(--accent-bg); }
+.checkbox.checked svg { color: var(--accent-text); }
 
 .receipt-label { font-size: 12.5px; color: var(--text-sub); }
 
