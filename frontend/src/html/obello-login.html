@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Obello POS — Sign In</title>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            'ob-bg':    '#111110',
+            'ob-panel': '#181817',
+            'ob-card':  '#1f1f1e',
+            'ob-hover': '#252524',
+            'ob-input': '#1a1a19',
+            'ob-text':  '#F5F2EE',
+            'ob-sub':   '#888884',
+            'ob-muted': '#555551',
+          },
+          fontFamily: {
+            sans:  ['DM Sans', 'sans-serif'],
+            grotesk: ['Space Grotesk', 'sans-serif'],
+          },
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Input underline focus animation */
+    .field-line::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: #F5F2EE;
+      transform: scaleX(0);
+      transform-origin: left;
+      transition: transform 0.3s ease;
+    }
+    .field-wrap.focused .field-line::after { transform: scaleX(1); }
+    .field-wrap.focused label { color: #F5F2EE; }
+
+    /* Error pill animation */
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .error-show { animation: slideDown 0.2s ease; }
+
+    /* Loading dots */
+    @keyframes blink {
+      0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+      40%           { opacity: 1;   transform: scale(1); }
+    }
+    .dot { animation: blink 1.2s ease-in-out infinite; }
+    .dot:nth-child(2) { animation-delay: 0.2s; }
+    .dot:nth-child(3) { animation-delay: 0.4s; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+  </style>
+</head>
+
+<body class="bg-ob-bg font-sans text-ob-text min-h-screen">
+
+  <div class="grid grid-cols-1 md:grid-cols-2 min-h-screen">
+
+    <!-- ── LEFT PANEL ── -->
+    <div class="bg-ob-bg border-r border-white/[0.07] flex-col justify-between p-14 hidden md:flex">
+
+      <!-- Brand -->
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-white/10 border border-white/[0.07] flex items-center justify-center shrink-0">
+          <span class="font-grotesk font-bold text-lg text-ob-text leading-none">O</span>
+        </div>
+        <div>
+          <div class="font-grotesk font-bold text-lg text-ob-text leading-tight tracking-tight">obello</div>
+          <div class="text-[10px] text-ob-muted tracking-widest uppercase mt-0.5">POS v2.0</div>
+        </div>
+      </div>
+
+      <!-- Hero text -->
+      <div class="flex flex-col gap-1">
+        <div class="font-grotesk font-bold text-[52px] leading-[1.08] tracking-tight text-ob-text">Your store.</div>
+        <div class="font-grotesk font-bold text-[52px] leading-[1.08] tracking-tight text-ob-sub">Smarter.</div>
+        <div class="font-grotesk font-bold text-[52px] leading-[1.08] tracking-tight text-ob-text">Faster.</div>
+      </div>
+
+      <!-- Features -->
+      <div class="flex flex-col gap-3">
+
+        <div class="flex items-start gap-4 p-4 rounded-xl border border-white/5 bg-white/2 hover:border-white/10 hover:bg-white/4 transition-all cursor-default">
+          <span class="text-lg mt-0.5">⚡</span>
+          <div>
+            <div class="text-sm font-medium text-ob-text mb-1">AI-Powered Insights</div>
+            <div class="text-xs text-ob-muted leading-relaxed">Gemini agent answers your business questions instantly</div>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-xl border border-white/5 bg-white/2 hover:border-white/10 hover:bg-white/4 transition-all cursor-default">
+          <span class="text-lg mt-0.5">📦</span>
+          <div>
+            <div class="text-sm font-medium text-ob-text mb-1">Smart Inventory</div>
+            <div class="text-xs text-ob-muted leading-relaxed">Real-time stock tracking with auto low-stock alerts</div>
+          </div>
+        </div>
+
+        <div class="flex items-start gap-4 p-4 rounded-xl border border-white/5 bg-white/2 hover:border-white/10 hover:bg-white/4 transition-all cursor-default">
+          <span class="text-lg mt-0.5">🖨️</span>
+          <div>
+            <div class="text-sm font-medium text-ob-text mb-1">Instant Receipts</div>
+            <div class="text-xs text-ob-muted leading-relaxed">Print bills and barcode sheets in one click</div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Footer roles -->
+      <div>
+        <div class="flex gap-2 mb-2">
+          <div class="text-[11px] px-3 py-1 rounded-full bg-ob-text text-ob-bg font-semibold font-grotesk">Admin</div>
+          <div class="text-[11px] px-3 py-1 rounded-full border border-white/10 text-ob-muted font-grotesk">Manager</div>
+          <div class="text-[11px] px-3 py-1 rounded-full border border-white/10 text-ob-muted font-grotesk">Cashier</div>
+        </div>
+        <div class="text-[11px] text-ob-muted tracking-wide">Role-based access control</div>
+      </div>
+
+    </div>
+
+    <!-- ── RIGHT PANEL (Login Form) ── -->
+    <div class="bg-ob-panel flex items-center justify-center p-8 md:p-14 min-h-screen md:min-h-0">
+      <div class="w-full max-w-sm flex flex-col gap-8">
+
+        <!-- Heading -->
+        <div>
+          <div class="font-grotesk font-bold text-[38px] tracking-tight text-ob-text leading-tight mb-2">Sign in</div>
+          <div class="text-[12px] text-ob-muted tracking-wider uppercase">Access your Obello dashboard</div>
+        </div>
+
+        <!-- Error message -->
+        <div id="errorPill" class="hidden items-center gap-3 bg-red-500/[0.08] border border-red-500/20 rounded-xl px-4 py-3 error-show">
+          <div class="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center shrink-0">
+            <span class="text-white text-[10px] font-bold">!</span>
+          </div>
+          <span id="errorText" class="text-red-400 text-[13px]"></span>
+        </div>
+
+        <!-- Success message -->
+        <div id="successPill" class="hidden bg-white/[0.06] border border-white/10 rounded-xl px-4 py-3 text-ob-text text-[13px]">
+          ✓ Signed in! Redirecting...
+        </div>
+
+        <!-- Fields -->
+        <div class="flex flex-col gap-8">
+
+          <!-- Email -->
+          <div class="field-wrap" id="emailWrap">
+            <label class="block text-[10px] font-medium text-ob-muted tracking-widest uppercase mb-2.5 transition-colors duration-200">Email</label>
+            <input
+              id="emailInput"
+              type="email"
+              placeholder="you@obello.com"
+              class="w-full bg-transparent border-none outline-none text-base font-medium text-ob-text placeholder-ob-hover pb-3 caret-ob-text"
+            />
+            <div class="field-line relative h-px bg-ob-card overflow-hidden"></div>
+          </div>
+
+          <!-- Password -->
+          <div class="field-wrap" id="passWrap">
+            <label class="block text-[10px] font-medium text-ob-muted tracking-widest uppercase mb-2.5 transition-colors duration-200">Password</label>
+            <div class="flex items-end gap-2">
+              <input
+                id="passInput"
+                type="password"
+                placeholder="••••••••••"
+                class="flex-1 bg-transparent border-none outline-none text-base font-medium text-ob-text placeholder-ob-hover pb-3 caret-ob-text"
+              />
+              <button id="eyeBtn" class="pb-3 text-ob-muted hover:text-ob-sub transition-colors text-base opacity-50 hover:opacity-100">👁️</button>
+            </div>
+            <div class="field-line relative h-px bg-ob-card overflow-hidden"></div>
+          </div>
+
+        </div>
+
+        <!-- Submit button -->
+        <button
+          id="submitBtn"
+          onclick="handleLogin()"
+          class="w-full h-14 bg-ob-text text-ob-bg rounded-2xl font-grotesk font-bold text-[15px] tracking-tight transition-all hover:-translate-y-0.5 hover:opacity-90 active:translate-y-0 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
+        >
+          <span id="btnText">Sign in to Obello →</span>
+          <span id="btnLoader" class="hidden items-center gap-1.5">
+            <span class="dot w-1.5 h-1.5 bg-ob-bg rounded-full inline-block"></span>
+            <span class="dot w-1.5 h-1.5 bg-ob-bg rounded-full inline-block"></span>
+            <span class="dot w-1.5 h-1.5 bg-ob-bg rounded-full inline-block"></span>
+          </span>
+        </button>
+
+        <!-- Secured badge -->
+        <div class="text-center text-[11px] text-ob-muted tracking-wider">
+          🔒 Secured by Supabase Auth
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // ── Focus effects ──
+    const emailInput = document.getElementById('emailInput')
+    const passInput  = document.getElementById('passInput')
+    const emailWrap  = document.getElementById('emailWrap')
+    const passWrap   = document.getElementById('passWrap')
+
+    emailInput.addEventListener('focus', () => emailWrap.classList.add('focused'))
+    emailInput.addEventListener('blur',  () => emailWrap.classList.remove('focused'))
+    passInput.addEventListener('focus',  () => passWrap.classList.add('focused'))
+    passInput.addEventListener('blur',   () => passWrap.classList.remove('focused'))
+
+    // ── Enter key ──
+    emailInput.addEventListener('keyup', e => { if (e.key === 'Enter') handleLogin() })
+    passInput.addEventListener('keyup',  e => { if (e.key === 'Enter') handleLogin() })
+
+    // ── Show / hide password ──
+    let showPass = false
+    document.getElementById('eyeBtn').addEventListener('click', () => {
+      showPass = !showPass
+      passInput.type = showPass ? 'text' : 'password'
+      document.getElementById('eyeBtn').textContent = showPass ? '🙈' : '👁️'
+    })
+
+    // ── Helpers ──
+    function showError(msg) {
+      const pill = document.getElementById('errorPill')
+      document.getElementById('errorText').textContent = msg
+      pill.classList.remove('hidden')
+      pill.classList.add('flex')
+    }
+
+    function hideError() {
+      const pill = document.getElementById('errorPill')
+      pill.classList.add('hidden')
+      pill.classList.remove('flex')
+    }
+
+    function setLoading(val) {
+      const btn    = document.getElementById('submitBtn')
+      const text   = document.getElementById('btnText')
+      const loader = document.getElementById('btnLoader')
+      btn.disabled = val
+      text.style.display   = val ? 'none' : 'inline'
+      loader.style.display = val ? 'flex' : 'none'
+    }
+
+    // ── Login handler ──
+    async function handleLogin() {
+      const email    = emailInput.value.trim()
+      const password = passInput.value
+
+      hideError()
+
+      if (!email || !password) {
+        showError('Please enter your email and password.')
+        return
+      }
+
+      setLoading(true)
+
+      // ── Connect Supabase here ──
+      // const { error } = await supabase.auth.signInWithPassword({ email, password })
+      // if (error) { showError('Wrong email or password.'); setLoading(false); return }
+      // document.getElementById('successPill').classList.remove('hidden')
+      // setTimeout(() => window.location.href = '/', 800)
+
+      // Demo only — remove when connecting Supabase
+      setTimeout(() => {
+        setLoading(false)
+        if (email === 'demo@obello.com' && password === 'demo123') {
+          document.getElementById('successPill').classList.remove('hidden')
+        } else {
+          showError('Wrong email or password. Please try again.')
+        }
+      }, 1500)
+    }
+  </script>
+
+</body>
+</html>
