@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Obello — Add New</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body,#root{height:100%;width:100%;overflow:hidden}
+  body{font-family:'DM Sans',sans-serif}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:rgba(128,128,128,0.18);border-radius:2px}
+  input::placeholder,textarea::placeholder{opacity:0.4}
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
+  select{-webkit-appearance:none;appearance:none}
+
+  /* animations */
+  @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+  @keyframes slideUp{from{opacity:0;transform:translateY(20px) scale(0.97)}to{opacity:1;transform:none}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes rowIn{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+
+// ═══════════════════════════════════════════════════════
+//  SUPABASE CONFIG
+// ═══════════════════════════════════════════════════════
+const SUPABASE_URL  = 'https://YOUR_PROJECT.supabase.co';
+const SUPABASE_ANON = 'YOUR_ANON_KEY';
+
+const sb = {
+  h: { 'apikey': SUPABASE_ANON, 'Authorization': `Bearer ${SUPABASE_ANON}`, 'Content-Type': 'application/json', 'Prefer': 'return=representation' },
+  async get(table, q='') {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=*&order=created_at.desc${q}`, { headers: this.h });
+    if (!r.ok) throw new Error(await r.text()); return r.json();
+  },
+  async post(table, body) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, { method:'POST', headers: this.h, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text()); return r.json();
+  },
+  async patch(table, id, body) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, { method:'PATCH', headers: this.h, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(await r.text());
+  },
+  async del(table, id) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, { method:'DELETE', headers: this.h });
+    if (!r.ok) throw new Error(await r.text());
+  },
+};
+
+// ═══════════════════════════════════════════════════════
+//  THEMES — exact Obello tokens
+// ═══════════════════════════════════════════════════════
+const DARK = {
+  bg:'#111110', bgPanel:'#181817', bgCard:'#1f1f1e', bgHover:'#252524',
+  bgInput:'#161615', border:'rgba(255,255,255,0.07)', borderMid:'rgba(255,255,255,0.13)',
+  borderFocus:'rgba(255,255,255,0.3)', text:'#F5F2EE', textSub:'#888884', textMuted:'#555551',
+  accentBg:'#F5F2EE', accentText:'#111110', activeNav:'#1f1f1e', activeNavTxt:'#F5F2EE',
+  shadow:'0 1px 6px rgba(0,0,0,0.6)', shadowLg:'0 16px 60px rgba(0,0,0,0.8)',
+  toggleOn:'#22c55e', toggleOff:'#2a2a28', danger:'#ef4444', dangerBg:'rgba(239,68,68,0.1)',
+  success:'#22c55e', successBg:'rgba(34,197,94,0.12)',
+  tag:'#252524', tagText:'#888884', inputBorder:'rgba(255,255,255,0.1)',
+};
+const LIGHT = {
+  bg:'#F7F5F2', bgPanel:'#FFFFFF', bgCard:'#FAFAF8', bgHover:'#F0EDE9',
+  bgInput:'#FFFFFF', border:'rgba(0,0,0,0.07)', borderMid:'rgba(0,0,0,0.13)',
+  borderFocus:'rgba(0,0,0,0.4)', text:'#141412', textSub:'#7A776F', textMuted:'#B0ADA5',
+  accentBg:'#141412', accentText:'#F7F5F2', activeNav:'#141412', activeNavTxt:'#F7F5F2',
+  shadow:'0 1px 6px rgba(0,0,0,0.07)', shadowLg:'0 16px 60px rgba(0,0,0,0.14)',
+  toggleOn:'#22c55e', toggleOff:'#DEDBD6', danger:'#dc2626', dangerBg:'rgba(220,38,38,0.07)',
+  success:'#16a34a', successBg:'rgba(22,163,74,0.1)',
+  tag:'#EDEBE7', tagText:'#7A776F', inputBorder:'rgba(0,0,0,0.12)',
+};
+
+// ═══════════════════════════════════════════════════════
+//  ICONS
+// ═══════════════════════════════════════════════════════
+const ICONS = {
+  cart:        '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>',
+  add:         '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  list:        '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+  business:    '<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>',
+  earnings:    '<circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>',
+  paylater:    '<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>',
+  supplier:    '<circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.58-7 8-7s8 3 8 7"/>',
+  categories:  '<path d="M3 3h7v7H3z"/><path d="M14 3h7v7h-7z"/><path d="M3 14h7v7H3z"/><path d="M14 14h7v7h-7z"/>',
+  cloths:      '<path d="M20.38 3.46L16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.57a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.57a2 2 0 0 0-1.34-2.23z"/>',
+  accessories: '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/>',
+  sun:         '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>',
+  moon:        '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  close:       '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  check:       '<polyline points="20 6 9 17 4 12"/>',
+  eye:         '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+  search:      '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+  trash:       '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
+  logout:      '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  chevronD:    '<polyline points="6 9 12 15 18 9"/>',
+  upload:      '<polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>',
+  barcode:     '<path d="M3 5v14"/><path d="M8 5v14"/><path d="M12 5v14"/><path d="M17 5v14"/><path d="M21 5v14"/>',
+  tag:         '<path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
+  package:     '<path d="M12 2l9 4.5v9L12 20 3 15.5v-9L12 2"/><line x1="12" y1="2" x2="12" y2="20"/><line x1="3" y1="6.5" x2="21" y2="6.5"/>',
+  image:       '<rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+};
+
+function ico(name, size=16, sw=1.5, color='currentColor') {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]||''}</svg>`;
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════
+let S = {
+  mode: 'light',
+  // View modal (categories)
+  viewModal: null,      // 'categories' | null
+  viewRows: [],
+  viewLoading: false,
+  viewSearch: '',
+  viewSort: 'date',     // 'date' | 'type'
+  // Add modal
+  addModal: null,       // 'categories' | 'cloths' | 'supplier' | 'accessories'
+  // Category form
+  catForm: { name:'', code:'', category:'' },
+  catErrors: {},
+  catSaving: false,
+  catSaved: false,
+  // Product form
+  prodForm: { category:'', size:'', name:'', cost:'', discount:'', labelPrice:'', stock:'', barcode:'', lotNo:'', designNo:'', color:'', supplier:'', owner:'Obello (O)' },
+  prodErrors: {},
+  prodSaving: false,
+  prodSaved: false,
+  prodImagePreview: null,
+  // Hover
+  hovered: null,
+  // Delete confirm in view modal
+  confirmDelete: null,
+  dbError: null,
+};
+
+const SIZES = ['XS','S','M','L','XL','XXL','XXXL','Free Size'];
+const SUPPLIERS = ['Posh Mart (P)', 'Ahmed Fabrics (A)', 'Karachi Textiles (K)', 'Faisal Cloth (F)'];
+const OWNERS = ['Obello (O)', 'Shashika (S)', 'Admin (A)'];
+
+function T() { return S.mode === 'dark' ? DARK : LIGHT; }
+function setState(patch) { Object.assign(S, typeof patch==='function' ? patch(S) : patch); render(); }
+
+// ─── SKU auto-generator
+function genSKU() {
+  const f = S.prodForm;
+  const catCode = (f.category || 'XX').substring(0,3).toUpperCase().replace(/[^A-Z]/g,'X');
+  const sup = (f.supplier||'XX')[0].toUpperCase()||'X';
+  const lot = f.lotNo || '00';
+  const des = f.designNo || '000';
+  const sz  = (f.size || 'X').substring(0,2);
+  return `${sup}P/${lot}/${des}/${catCode}/${sz}`;
+}
+
+// ─── DB operations
+async function loadCategoryView() {
+  setState({ viewLoading: true, dbError: null });
+  try {
+    const rows = await sb.get('categories');
+    setState({ viewRows: rows, viewLoading: false });
+  } catch(e) { setState({ viewLoading: false, dbError: e.message }); }
+}
+
+async function saveCategory() {
+  const f = S.catForm;
+  const errs = {};
+  if (!f.name.trim())     errs.name     = 'Required';
+  if (!f.code.trim())     errs.code     = 'Required';
+  if (!f.category.trim()) errs.category = 'Required';
+  if (Object.keys(errs).length) { setState({ catErrors: errs }); return; }
+  setState({ catSaving: true, catErrors: {} });
+  try {
+    const [row] = await sb.post('categories', { name: f.name.trim(), code: f.code.trim().toUpperCase(), category: f.category.trim(), active: true });
+    setState(s => ({ viewRows: [row,...s.viewRows], catSaving: false, catSaved: true, catForm: { name:'', code:'', category:'' } }));
+    setTimeout(() => setState({ catSaved: false, addModal: null }), 1400);
+  } catch(e) { setState({ catSaving: false, dbError: e.message }); }
+}
+
+async function toggleActive(id, current) {
+  try {
+    await sb.patch('categories', id, { active: !current });
+    setState(s => ({ viewRows: s.viewRows.map(r => r.id===id ? {...r, active: !current} : r) }));
+  } catch(e) { setState({ dbError: e.message }); }
+}
+
+async function deleteCategory(id) {
+  try {
+    await sb.del('categories', id);
+    setState(s => ({ viewRows: s.viewRows.filter(r => r.id!==id), confirmDelete: null }));
+  } catch(e) { setState({ dbError: e.message, confirmDelete: null }); }
+}
+
+async function saveProduct() {
+  const f = S.prodForm;
+  const errs = {};
+  if (!f.name.trim())     errs.name     = 'Required';
+  if (!f.category.trim()) errs.category = 'Required';
+  if (!f.cost)            errs.cost     = 'Required';
+  if (Object.keys(errs).length) { setState({ prodErrors: errs }); return; }
+  setState({ prodSaving: true, prodErrors: {} });
+  try {
+    await sb.post('products', {
+      name: f.name.trim(), category: f.category.trim(), size: f.size,
+      cost: parseFloat(f.cost)||0, discount: parseFloat(f.discount)||0,
+      label_price: parseFloat(f.labelPrice)||0, stock: parseInt(f.stock)||0,
+      barcode: f.barcode, lot_no: f.lotNo, design_no: f.designNo,
+      color: f.color, supplier: f.supplier, owner: f.owner, sku: genSKU(),
+    });
+    setState({ prodSaving: false, prodSaved: true });
+    setTimeout(() => setState({ prodSaved: false, addModal: null, prodForm: { category:'', size:'', name:'', cost:'', discount:'', labelPrice:'', stock:'', barcode:'', lotNo:'', designNo:'', color:'', supplier:'', owner:'Obello (O)' }, prodImagePreview: null }), 1400);
+  } catch(e) { setState({ prodSaving: false, dbError: e.message }); }
+}
+
+// ═══════════════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════════════
+function render() {
+  const t = T();
+  const { mode, hovered, viewModal, addModal, viewRows, viewLoading, viewSearch, viewSort,
+          catForm, catErrors, catSaving, catSaved,
+          prodForm, prodErrors, prodSaving, prodSaved, prodImagePreview,
+          confirmDelete, dbError } = S;
+
+  const navItems = [
+    { id:'cart',        label:'Cart',           icon:'cart'        },
+    { id:'add',         label:'Add New',        icon:'add'         },
+    { id:'products',    label:'Product List',   icon:'list'        },
+    { id:'business',    label:'Today Business', icon:'business'    },
+    { id:'earnings',    label:'Owner Earnings', icon:'earnings'    },
+    { id:'paylater',    label:'Pay Later List', icon:'paylater'    },
+  ];
+
+  const sections = [
+    { id:'supplier',    label:'Supplier',         desc:'Add new supplier and view them',                  icon:'supplier'    },
+    { id:'categories',  label:'Main Categories',   desc:'Create and manage your main product categories',  icon:'categories'  },
+    { id:'cloths',      label:'Cloths Products',   desc:'Add new clothing items to your inventory',        icon:'cloths'      },
+    { id:'accessories', label:'Accessories & Others', desc:'Manage accessories and miscellaneous products', icon:'accessories' },
+  ];
+
+  const filteredView = viewRows.filter(r => {
+    if (!viewSearch) return true;
+    const q = viewSearch.toLowerCase();
+    return (r.name||'').toLowerCase().includes(q) || (r.code||'').toLowerCase().includes(q) || (r.category||'').toLowerCase().includes(q);
+  }).sort((a,b) => viewSort === 'type'
+    ? (a.category||'').localeCompare(b.category||'')
+    : new Date(b.created_at||0) - new Date(a.created_at||0)
+  );
+
+  const dateStr = new Date().toLocaleDateString('en-US', { weekday:'short', day:'numeric', month:'short' });
+  const sku = (addModal === 'cloths') ? genSKU() : '';
+
+  // ── inline styles helpers
+  const inp = (err) => `
+    width:100%; padding:10px 13px;
+    background:${t.bgInput}; border:1px solid ${err ? t.danger : t.inputBorder};
+    border-radius:9px; color:${t.text}; font-size:13.5px;
+    font-family:'DM Sans',sans-serif; outline:none; transition:border-color .15s;
+  `;
+  const lbl = `font-size:11px; font-weight:600; color:${t.textSub}; letter-spacing:.06em; text-transform:uppercase; display:block; margin-bottom:6px;`;
+  const selStyle = `${inp(false)} cursor:pointer; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23888884' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l5 5 5-5'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; padding-right:34px;`;
+
+  document.getElementById('root').innerHTML = `
+  <div style="display:flex;height:100vh;width:100vw;background:${t.bg};color:${t.text};font-family:'DM Sans',sans-serif;transition:background .3s,color .3s;">
+
+    <!-- ════ SIDEBAR ════ -->
+    <aside style="width:248px;min-width:248px;background:${t.bgPanel};border-right:1px solid ${t.border};display:flex;flex-direction:column;z-index:10;transition:background .3s;">
+
+      <!-- Logo -->
+      <div style="padding:24px 20px 18px;border-bottom:1px solid ${t.border};">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:${t.text};opacity:.08;position:absolute;"></div>
+          <svg width="36" height="36" viewBox="0 0 40 40" fill="none" style="flex-shrink:0;">
+            <rect width="40" height="40" rx="10" fill="${t.text}" fill-opacity="0.1"/>
+            <text x="20" y="27" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-weight="700" font-size="18" fill="${t.text}" letter-spacing="-0.5">O</text>
+          </svg>
+          <div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px;letter-spacing:-.5px;color:${t.text};">obello</div>
+            <div style="font-size:9.5px;color:${t.textMuted};letter-spacing:.1em;text-transform:uppercase;margin-top:1px;">POS V2.0</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Nav -->
+      <nav style="flex:1;padding:10px 10px;display:flex;flex-direction:column;gap:2px;">
+        ${navItems.map(item => {
+          const active = item.id === 'add';
+          return `<div class="nav-item" data-nav="${item.id}" style="
+            display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:9px;
+            cursor:pointer;user-select:none;white-space:nowrap;overflow:hidden;
+            background:${active ? t.activeNav : 'transparent'};
+            color:${active ? t.activeNavTxt : t.textSub};
+            font-size:13px;font-weight:${active ? 500 : 400};letter-spacing:-.1px;
+            transition:background .13s,color .13s;">
+            ${ico(item.icon, 15, active ? 2 : 1.5, active ? t.activeNavTxt : t.textSub)}
+            <span>${item.label}</span>
+          </div>`;
+        }).join('')}
+      </nav>
+
+      <!-- User + mode -->
+      <div style="padding:12px 10px;border-top:1px solid ${t.border};display:flex;flex-direction:column;gap:6px;">
+
+        <!-- User row -->
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:9px;cursor:pointer;transition:background .13s;" class="user-row">
+          <div style="width:32px;height:32px;border-radius:50%;background:${t.activeNav};color:${t.activeNavTxt};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;font-family:'Space Grotesk',sans-serif;flex-shrink:0;">S</div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:500;color:${t.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Shashika Nuwan</div>
+            <div style="font-size:10px;color:${t.textMuted};letter-spacing:.06em;text-transform:uppercase;">Admin</div>
+          </div>
+          ${ico('logout', 14, 1.5, t.textMuted)}
+        </div>
+
+        <!-- Dark mode -->
+        <div id="theme-toggle" style="display:flex;align-items:center;justify-content:space-between;padding:9px 11px;border-radius:9px;cursor:pointer;background:${t.bgCard};border:1px solid ${t.border};font-size:12.5px;color:${t.textSub};transition:background .13s;">
+          <div style="display:flex;align-items:center;gap:7px;">
+            ${ico(mode==='dark' ? 'moon' : 'sun', 13, 1.5, t.textSub)}
+            <span>${mode==='dark' ? 'Dark' : 'Light'} mode</span>
+          </div>
+          <div style="width:36px;height:20px;border-radius:10px;position:relative;background:${mode==='dark' ? t.toggleOn : t.toggleOff};transition:background .2s;flex-shrink:0;">
+            <div style="position:absolute;top:3px;left:${mode==='dark' ? '18px' : '3px'};width:14px;height:14px;border-radius:50%;background:#fff;transition:left .18s;box-shadow:0 1px 3px rgba(0,0,0,.3);"></div>
+          </div>
+        </div>
+
+        <div style="font-size:9.5px;color:${t.textMuted};text-align:center;letter-spacing:.08em;text-transform:uppercase;padding:4px 0;">OBELLO · VERSION 2.0</div>
+      </div>
+    </aside>
+
+    <!-- ════ MAIN ════ -->
+    <main style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+
+      <!-- Page header -->
+      <div style="padding:28px 40px 22px;border-bottom:1px solid ${t.border};flex-shrink:0;">
+        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:26px;letter-spacing:-.6px;color:${t.text};">Add New</div>
+        <div style="font-size:13px;color:${t.textMuted};margin-top:4px;">Manage your store data</div>
+      </div>
+
+      <!-- Section rows -->
+      <div style="flex:1;overflow-y:auto;padding:28px 40px 40px;display:flex;flex-direction:column;gap:12px;">
+        ${sections.map(sec => `
+        <div class="section-row" data-id="${sec.id}" style="
+          display:flex;align-items:center;padding:22px 24px;
+          background:${t.bgPanel};border:1px solid ${t.border};
+          border-radius:16px;gap:18px;transition:border-color .13s,background .13s;cursor:default;">
+
+          <div style="width:48px;height:48px;border-radius:13px;background:${t.bgCard};border:1px solid ${t.border};display:flex;align-items:center;justify-content:center;flex-shrink:0;color:${t.textSub};">
+            ${ico(sec.icon, 20, 1.5, t.textSub)}
+          </div>
+
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:15px;font-weight:600;color:${t.text};letter-spacing:-.2px;">${sec.label}</div>
+            <div style="font-size:12.5px;color:${t.textMuted};margin-top:3px;">${sec.desc}</div>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-shrink:0;">
+            <button class="view-btn" data-sec="${sec.id}" style="
+              display:flex;align-items:center;gap:6px;padding:9px 18px;border-radius:9px;
+              border:1px solid ${t.border};background:${t.bgCard};color:${t.textSub};
+              font-size:13px;font-weight:500;font-family:'DM Sans',sans-serif;cursor:pointer;
+              transition:all .13s;white-space:nowrap;">
+              ${ico('eye', 14, 1.5, t.textSub)} View
+            </button>
+            <button class="addnew-btn" data-sec="${sec.id}" style="
+              display:flex;align-items:center;gap:6px;padding:9px 20px;border-radius:9px;
+              border:none;background:${t.accentBg};color:${t.accentText};
+              font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;
+              transition:opacity .13s;white-space:nowrap;">
+              ${ico('add', 14, 2.2, t.accentText)} + Add New
+            </button>
+          </div>
+        </div>`).join('')}
+
+        <div style="margin-top:16px;text-align:center;">
+          <span style="font-size:10px;color:${t.textMuted};letter-spacing:.1em;text-transform:uppercase;">Obello POS · Version 2.0</span>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ════════════════════════════════════
+       VIEW MODAL — Main Categories
+  ════════════════════════════════════ -->
+  ${viewModal === 'categories' ? `
+  <div id="view-overlay" style="position:fixed;inset:0;z-index:200;background:rgba(0,0,0,${mode==='dark'?'.6':'.32'});display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);animation:fadeIn .18s ease;">
+    <div style="
+      background:${t.bgPanel};border-radius:20px;width:620px;max-width:calc(100vw - 40px);
+      max-height:80vh;display:flex;flex-direction:column;
+      border:1px solid ${t.borderMid};box-shadow:${t.shadowLg};
+      overflow:hidden;animation:slideUp .2s cubic-bezier(.3,.8,.4,1);">
+
+      <!-- Header -->
+      <div style="padding:22px 26px 18px;border-bottom:1px solid ${t.border};">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;">
+          <div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:19px;color:${t.text};letter-spacing:-.4px;">Main Categories</div>
+            <div style="font-size:12px;color:${t.textMuted};margin-top:3px;">All categories on record</div>
+          </div>
+          <button id="close-view" style="width:32px;height:32px;border-radius:8px;border:1px solid ${t.border};background:${t.bgCard};cursor:pointer;display:flex;align-items:center;justify-content:center;color:${t.textSub};">
+            ${ico('close', 14, 2, t.textSub)}
+          </button>
+        </div>
+        <!-- Search + Sort -->
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div style="flex:1;display:flex;align-items:center;gap:8px;background:${t.bgCard};border:1px solid ${t.border};border-radius:9px;padding:0 13px;height:40px;" id="view-search-wrap">
+            ${ico('search', 14, 1.5, t.textMuted)}
+            <input id="view-search" type="text" value="${viewSearch}" placeholder="Search by name or code…" style="flex:1;background:none;border:none;outline:none;font-family:'DM Sans',sans-serif;font-size:13.5px;color:${t.text};caret-color:${t.text};"/>
+          </div>
+          <button id="sort-date" style="padding:0 16px;height:40px;border-radius:9px;border:1px solid ${viewSort==='date'?'transparent':t.border};background:${viewSort==='date'?t.accentBg:t.bgCard};color:${viewSort==='date'?t.accentText:t.textSub};font-size:12.5px;font-weight:${viewSort==='date'?600:400};font-family:'DM Sans',sans-serif;cursor:pointer;white-space:nowrap;">Date Created</button>
+          <button id="sort-type" style="padding:0 16px;height:40px;border-radius:9px;border:1px solid ${viewSort==='type'?'transparent':t.border};background:${viewSort==='type'?t.accentBg:t.bgCard};color:${viewSort==='type'?t.accentText:t.textSub};font-size:12.5px;font-weight:${viewSort==='type'?600:400};font-family:'DM Sans',sans-serif;cursor:pointer;white-space:nowrap;">Type Order</button>
+        </div>
+      </div>
+
+      <!-- Body -->
+      <div style="flex:1;overflow-y:auto;padding:8px 0;">
+        ${viewLoading ? `
+          <div style="padding:32px;display:flex;flex-direction:column;gap:8px;">
+            ${[1,2,3].map(()=>`<div style="height:60px;border-radius:10px;background:${t.bgCard};animation:pulse 1.4s infinite;"></div>`).join('')}
+          </div>
+        ` : filteredView.length === 0 ? `
+          <div style="padding:48px;text-align:center;color:${t.textMuted};">
+            <div style="margin-bottom:8px;">${ico('categories', 36, 1, t.border)}</div>
+            <div style="font-size:14px;color:${t.textSub};font-weight:500;">${viewSearch ? 'No results found' : 'No categories yet'}</div>
+          </div>
+        ` : filteredView.map((row, idx) => `
+          <div style="
+            display:flex;align-items:center;gap:14px;padding:14px 26px;
+            border-bottom:${idx<filteredView.length-1?`1px solid ${t.border}`:'none'};
+            animation:rowIn .2s ease both;animation-delay:${idx*0.04}s;
+            transition:background .12s;" class="view-row">
+            <!-- Code badge -->
+            <div style="width:42px;height:42px;border-radius:10px;background:${t.bgCard};border:1px solid ${t.border};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:${t.text};font-family:'Space Grotesk',sans-serif;letter-spacing:.03em;flex-shrink:0;">
+              ${(row.code||'??').substring(0,4)}
+            </div>
+            <!-- Info -->
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:14px;font-weight:600;color:${t.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${row.name}</div>
+              <div style="font-size:12px;color:${t.textMuted};margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                ${row.code} · ${row.category||'—'}
+              </div>
+            </div>
+            <!-- Active toggle -->
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button class="toggle-active" data-id="${row.id}" data-active="${row.active?'1':'0'}" style="
+                width:40px;height:22px;border-radius:11px;border:none;position:relative;cursor:pointer;
+                background:${row.active ? t.toggleOn : t.toggleOff};transition:background .18s;flex-shrink:0;">
+                <div style="position:absolute;top:3px;left:${row.active?'20px':'3px'};width:16px;height:16px;border-radius:50%;background:#fff;transition:left .18s;box-shadow:0 1px 3px rgba(0,0,0,.3);"></div>
+              </button>
+              <span style="font-size:12px;font-weight:500;color:${row.active?t.toggleOn:t.textMuted};min-width:38px;">${row.active?'Active':'Off'}</span>
+            </div>
+            <!-- Delete -->
+            <button class="del-cat" data-id="${row.id}" style="width:32px;height:32px;border-radius:8px;border:1px solid transparent;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;color:${t.textMuted};transition:all .13s;flex-shrink:0;">
+              ${ico('trash', 14, 1.5, t.textMuted)}
+            </button>
+          </div>`).join('')}
+      </div>
+    </div>
+  </div>` : ''}
+
+  <!-- ════════════════════════════════════
+       ADD MODAL — Categories
+  ════════════════════════════════════ -->
+  ${addModal === 'categories' ? `
+  <div id="add-overlay" style="position:fixed;inset:0;z-index:200;background:rgba(0,0,0,${mode==='dark'?'.6':'.32'});display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px);animation:fadeIn .18s ease;">
+    <div style="background:${t.bgPanel};border-radius:20px;width:500px;max-width:calc(100vw-40px);border:1px solid ${t.borderMid};box-shadow:${t.shadowLg};overflow:hidden;animation:slideUp .2s cubic-bezier(.3,.8,.4,1);">
+
+      <div style="padding:22px 26px 20px;border-bottom:1px solid ${t.border};display:flex;align-items:flex-start;justify-content:space-between;">
+        <div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:18px;color:${t.text};letter-spacing:-.4px;">New Category</div>
+          <div style="font-size:12px;color:${t.textMuted};margin-top:3px;">Saved to your database</div>
+        </div>
+        <button id="close-add" style="width:32px;height:32px;border-radius:8px;border:1px solid ${t.border};background:${t.bgCard};cursor:pointer;display:flex;align-items:center;justify-content:center;">
+          ${ico('close', 14, 2, t.textSub)}
+        </button>
+      </div>
+
+      <div style="padding:24px 26px;display:flex;flex-direction:column;gap:16px;">
+        <div>
+          <label style="${lbl}">Category Name <span style="color:${t.danger}">*</span></label>
+          <input id="cat-name" type="text" value="${catForm.name}" placeholder="e.g. Knitwear" style="${inp(catErrors.name)}"/>
+          ${catErrors.name ? `<div style="font-size:11.5px;color:${t.danger};margin-top:4px;">${catErrors.name}</div>` : ''}
+        </div>
+        <div>
+          <label style="${lbl}">Short Code <span style="color:${t.danger}">*</span></label>
+          <input id="cat-code" type="text" value="${catForm.code}" placeholder="e.g. KNT" maxlength="10" style="${inp(catErrors.code)} font-family:'Space Grotesk',sans-serif;font-weight:600;letter-spacing:.06em;text-transform:uppercase;"/>
+          <div style="font-size:11px;color:${t.textMuted};margin-top:4px;">Auto uppercase · max 10 chars</div>
+          ${catErrors.code ? `<div style="font-size:11.5px;color:${t.danger};margin-top:2px;">${catErrors.code}</div>` : ''}
+        </div>
+        <div>
+          <label style="${lbl}">Category <span style="color:${t.danger}">*</span></label>
+          <input id="cat-category" type="text" value="${catForm.category}" placeholder="e.g. Clothing & Accessories" style="${inp(catErrors.category)}"/>
+          ${catErrors.category ? `<div style="font-size:11.5px;color:${t.danger};margin-top:4px;">${catErrors.category}</div>` : ''}
+        </div>
+      </div>
+
+      <div style="padding:16px 26px 22px;border-top:1px solid ${t.border};display:flex;gap:8px;justify-content:flex-end;">
+        <button id="cat-cancel" style="padding:10px 20px;border-radius:9px;border:1px solid ${t.border};background:${t.bgCard};color:${t.textSub};font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer;">Cancel</button>
+        <button id="cat-save" style="padding:10px 26px;border-radius:9px;border:none;background:${catSaved?t.success:t.accentBg};color:${catSaved?'#fff':t.accentText};font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;gap:7px;min-width:130px;justify-content:center;transition:background .25s;opacity:${catSaving?.7:1};">
+          ${catSaved ? ico('check',14,2.5,'#fff')+'&nbsp;Saved!' : catSaving ? '<span style="width:13px;height:13px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin .6s linear infinite;"></span>&nbsp;Saving…' : ico('add',14,2.2,t.accentText)+'&nbsp;Save Category'}
+        </button>
+      </div>
+    </div>
+  </div>` : ''}
+
+  <!-- ════════════════════════════════════
+       ADD MODAL — Cloth Products  ★ MAIN
+  ════════════════════════════════════ -->
+  ${addModal === 'cloths' ? `
+  <div id="add-overlay" style="position:fixed;inset:0;z-index:200;background:rgba(0,0,0,${mode==='dark'?'.65':'.35'});display:flex;align-items:center;justify-content:center;backdrop-filter:blur(7px);animation:fadeIn .18s ease;">
+    <div style="
+      background:${t.bgPanel};border-radius:20px;
+      width:860px;max-width:calc(100vw - 40px);max-height:90vh;
+      display:flex;flex-direction:column;
+      border:1px solid ${t.borderMid};box-shadow:${t.shadowLg};
+      overflow:hidden;animation:slideUp .22s cubic-bezier(.3,.8,.4,1);">
+
+      <!-- Modal header -->
+      <div style="padding:22px 28px 18px;border-bottom:1px solid ${t.border};display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+        <div>
+          <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:19px;color:${t.text};letter-spacing:-.4px;">Add Cloth Product</div>
+          <div style="font-size:12.5px;color:${t.textMuted};margin-top:3px;">Fill all required fields · SKU auto-generated</div>
+        </div>
+        <!-- SKU badge -->
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="padding:6px 14px;border-radius:8px;background:${t.bgCard};border:1px solid ${t.border};">
+            <div style="font-size:9.5px;color:${t.textMuted};letter-spacing:.07em;text-transform:uppercase;margin-bottom:2px;">SKU</div>
+            <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px;color:${t.text};letter-spacing:.04em;">${sku}</div>
+          </div>
+          <button id="close-add" style="width:34px;height:34px;border-radius:9px;border:1px solid ${t.border};background:${t.bgCard};cursor:pointer;display:flex;align-items:center;justify-content:center;">
+            ${ico('close',15,2,t.textSub)}
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal body — 2 columns -->
+      <div style="flex:1;overflow-y:auto;padding:24px 28px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+
+          <!-- LEFT column -->
+          <div style="display:flex;flex-direction:column;gap:16px;">
+
+            <!-- Category + Size row -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div>
+                <label style="${lbl}">Category <span style="color:${t.danger}">*</span></label>
+                <div style="position:relative;">
+                  <select id="prod-category" style="${selStyle}${prodErrors.category?`border-color:${t.danger};`:''}">
+                    <option value="">Select category</option>
+                    ${['Tops','Bottoms','Outerwear','Knitwear','Denim','Chinos (Trousers)','Shirts','Jackets'].map(c=>`<option value="${c}" ${prodForm.category===c?'selected':''}>${c}</option>`).join('')}
+                  </select>
+                </div>
+                ${prodErrors.category ? `<div style="font-size:11px;color:${t.danger};margin-top:3px;">${prodErrors.category}</div>` : ''}
+              </div>
+              <div>
+                <label style="${lbl}">Size</label>
+                <div style="position:relative;">
+                  <select id="prod-size" style="${selStyle}">
+                    <option value="">Select size</option>
+                    ${SIZES.map(s=>`<option value="${s}" ${prodForm.size===s?'selected':''}>${s}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Product name -->
+            <div>
+              <label style="${lbl}">Product Name <span style="color:${t.danger}">*</span></label>
+              <input id="prod-name" type="text" value="${prodForm.name}" placeholder="e.g. Chinos (Trousers) XL" style="${inp(prodErrors.name)}"/>
+              ${prodErrors.name ? `<div style="font-size:11px;color:${t.danger};margin-top:3px;">${prodErrors.name}</div>` : ''}
+            </div>
+
+            <!-- Cost / Discount / Label Price -->
+            <div>
+              <label style="${lbl}">Pricing <span style="color:${t.danger}">*</span></label>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                <div style="position:relative;">
+                  <div style="position:absolute;top:50%;left:11px;transform:translateY(-50%);font-size:11px;color:${t.textMuted};pointer-events:none;white-space:nowrap;">Rs.</div>
+                  <input id="prod-cost" type="number" value="${prodForm.cost}" placeholder="Cost" style="${inp(prodErrors.cost)} padding-left:30px;"/>
+                </div>
+                <input id="prod-discount" type="number" value="${prodForm.discount}" placeholder="Discount%" style="${inp(false)}"/>
+                <div style="position:relative;">
+                  <div style="position:absolute;top:50%;left:11px;transform:translateY(-50%);font-size:11px;color:${t.textMuted};pointer-events:none;white-space:nowrap;">Rs.</div>
+                  <input id="prod-label" type="number" value="${prodForm.labelPrice}" placeholder="Label" style="${inp(false)} padding-left:30px;"/>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:4px;padding:0 2px;">
+                <span style="font-size:10px;color:${t.textMuted};">Cost</span>
+                <span style="font-size:10px;color:${t.textMuted};">Discount %</span>
+                <span style="font-size:10px;color:${t.textMuted};">Label Price</span>
+              </div>
+              ${prodErrors.cost ? `<div style="font-size:11px;color:${t.danger};margin-top:3px;">${prodErrors.cost}</div>` : ''}
+            </div>
+
+            <!-- Stock + Barcode -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div>
+                <label style="${lbl}">Stock</label>
+                <input id="prod-stock" type="number" value="${prodForm.stock}" placeholder="Qty" style="${inp(false)}"/>
+              </div>
+              <div>
+                <label style="${lbl}">Barcode</label>
+                <div style="position:relative;">
+                  <div style="position:absolute;top:50%;left:11px;transform:translateY(-50%);pointer-events:none;">${ico('barcode',14,1.5,t.textMuted)}</div>
+                  <input id="prod-barcode" type="text" value="${prodForm.barcode}" placeholder="Scan or enter" style="${inp(false)} padding-left:32px;"/>
+                </div>
+              </div>
+            </div>
+
+            <!-- Lot No / Design No / Color -->
+            <div>
+              <label style="${lbl}">Details</label>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                <input id="prod-lotno" type="text" value="${prodForm.lotNo}" placeholder="Lot No" style="${inp(false)}"/>
+                <input id="prod-designno" type="text" value="${prodForm.designNo}" placeholder="Design No" style="${inp(false)}"/>
+                <input id="prod-color" type="text" value="${prodForm.color}" placeholder="Color" style="${inp(false)}"/>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:4px;padding:0 2px;">
+                <span style="font-size:10px;color:${t.textMuted};">Lot Number</span>
+                <span style="font-size:10px;color:${t.textMuted};">Design No</span>
+                <span style="font-size:10px;color:${t.textMuted};">Color</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT column -->
+          <div style="display:flex;flex-direction:column;gap:16px;">
+
+            <!-- Supplier + Owner -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+              <div>
+                <label style="${lbl}">Supplier</label>
+                <select id="prod-supplier" style="${selStyle}">
+                  <option value="">Select supplier</option>
+                  ${SUPPLIERS.map(s=>`<option value="${s}" ${prodForm.supplier===s?'selected':''}>${s}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label style="${lbl}">Owner</label>
+                <select id="prod-owner" style="${selStyle}">
+                  ${OWNERS.map(o=>`<option value="${o}" ${prodForm.owner===o?'selected':''}>${o}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+
+            <!-- Product image -->
+            <div>
+              <label style="${lbl}">Product Image</label>
+              <div id="img-drop" style="
+                height:180px;border-radius:12px;border:1.5px dashed ${t.borderMid};
+                background:${t.bgCard};display:flex;flex-direction:column;
+                align-items:center;justify-content:center;gap:10px;cursor:pointer;
+                transition:border-color .15s,background .15s;position:relative;overflow:hidden;">
+                ${prodImagePreview ? `
+                  <img src="${prodImagePreview}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:11px;"/>
+                  <div style="position:absolute;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;border-radius:11px;opacity:0;transition:opacity .15s;" class="img-overlay">
+                    <div style="color:#fff;font-size:12.5px;font-weight:500;">${ico('upload',16,1.5,'#fff')} Change Image</div>
+                  </div>
+                ` : `
+                  ${ico('upload', 24, 1.5, t.textMuted)}
+                  <div style="font-size:13px;color:${t.textMuted};">Click to upload image</div>
+                  <div style="font-size:11px;color:${t.border};">PNG, JPG up to 5MB</div>
+                `}
+                <input id="img-input" type="file" accept="image/*" style="position:absolute;inset:0;opacity:0;cursor:pointer;"/>
+              </div>
+            </div>
+
+            <!-- SKU display -->
+            <div style="padding:14px 16px;border-radius:12px;background:${t.bgCard};border:1px solid ${t.border};">
+              <div style="display:flex;align-items:center;justify-content:space-between;">
+                <div style="display:flex;align-items:center;gap:8px;color:${t.textSub};">
+                  ${ico('tag',14,1.5,t.textSub)}
+                  <span style="font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;">Auto-generated SKU</span>
+                </div>
+                <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;color:${t.text};letter-spacing:.04em;">${sku}</div>
+              </div>
+              <div style="font-size:11px;color:${t.textMuted};margin-top:6px;">Updates as you fill Supplier · Lot No · Design No · Category · Size</div>
+            </div>
+
+            <!-- Stock summary card -->
+            <div style="padding:14px 16px;border-radius:12px;background:${t.bgCard};border:1px solid ${t.border};display:flex;align-items:center;gap:12px;">
+              ${ico('package',18,1.5,t.textSub)}
+              <div>
+                <div style="font-size:11px;color:${t.textMuted};text-transform:uppercase;letter-spacing:.06em;">Stock to add</div>
+                <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:20px;color:${t.text};margin-top:2px;">${prodForm.stock || '0'} <span style="font-size:12px;font-weight:400;color:${t.textMuted};">units</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div style="padding:16px 28px 20px;border-top:1px solid ${t.border};display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+        <button id="prod-clear" style="padding:10px 20px;border-radius:9px;border:1px solid ${t.border};background:transparent;color:${t.textSub};font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer;transition:all .13s;">
+          Clear Form
+        </button>
+        <div style="display:flex;gap:8px;">
+          <button id="close-add" style="padding:10px 20px;border-radius:9px;border:1px solid ${t.border};background:${t.bgCard};color:${t.textSub};font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer;">Cancel</button>
+          <button id="prod-save" style="
+            padding:10px 32px;border-radius:9px;border:none;
+            background:${prodSaved?t.success:t.accentBg};color:${prodSaved?'#fff':t.accentText};
+            font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;
+            display:flex;align-items:center;gap:8px;min-width:150px;justify-content:center;
+            transition:background .25s;opacity:${prodSaving?.7:1};">
+            ${prodSaved ? ico('check',14,2.5,'#fff')+'&nbsp;Product Added!' : prodSaving ? '<span style="width:13px;height:13px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;display:inline-block;animation:spin .6s linear infinite;"></span>&nbsp;Saving…' : ico('add',14,2.2,t.accentText)+'&nbsp;Add Product'}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>` : ''}
+
+  <!-- ════ DELETE CONFIRM ════ -->
+  ${confirmDelete ? `
+  <div id="del-overlay" style="position:fixed;inset:0;z-index:400;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);">
+    <div style="background:${t.bgPanel};border-radius:16px;width:340px;border:1px solid ${t.borderMid};box-shadow:${t.shadowLg};padding:28px;text-align:center;animation:slideUp .18s cubic-bezier(.3,.8,.4,1);">
+      <div style="width:50px;height:50px;border-radius:13px;background:${t.dangerBg};border:1px solid ${t.danger};display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+        ${ico('trash',22,1.5,t.danger)}
+      </div>
+      <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;color:${t.text};margin-bottom:8px;">Delete Category?</div>
+      <div style="font-size:13px;color:${t.textSub};line-height:1.6;margin-bottom:22px;">This permanently removes the category from your database and cannot be undone.</div>
+      <div style="display:flex;gap:8px;">
+        <button id="del-cancel" style="flex:1;padding:10px;border-radius:9px;border:1px solid ${t.border};background:${t.bgCard};color:${t.textSub};font-size:13px;font-family:'DM Sans',sans-serif;cursor:pointer;">Cancel</button>
+        <button id="del-confirm" style="flex:1;padding:10px;border-radius:9px;border:none;background:${t.danger};color:#fff;font-size:13px;font-weight:600;font-family:'DM Sans',sans-serif;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">
+          ${ico('trash',14,1.8,'#fff')} Delete
+        </button>
+      </div>
+    </div>
+  </div>` : ''}
+
+  <!-- DB Error toast -->
+  ${dbError ? `
+  <div style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:500;background:${t.danger};color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:500;display:flex;align-items:center;gap:10px;box-shadow:0 8px 32px rgba(0,0,0,.3);animation:slideUp .2s ease;">
+    ${ico('warning',14,2,'#fff')} ${dbError}
+    <button id="clear-err" style="background:rgba(255,255,255,.2);border:none;cursor:pointer;padding:2px 8px;border-radius:5px;color:#fff;font-size:12px;margin-left:4px;">✕</button>
+  </div>` : ''}
+  `;
+
+  wire();
+}
+
+// ═══════════════════════════════════════════════════════
+//  EVENT WIRING
+// ═══════════════════════════════════════════════════════
+function wire() {
+  const t = T();
+
+  // Theme toggle
+  document.getElementById('theme-toggle')?.addEventListener('click', () => {
+    setState({ mode: S.mode === 'dark' ? 'light' : 'dark' });
+  });
+
+  // Hover on section rows
+  document.querySelectorAll('.section-row').forEach(row => {
+    row.addEventListener('mouseenter', () => {
+      row.style.background = t.bgHover;
+      row.style.borderColor = t.borderMid;
+    });
+    row.addEventListener('mouseleave', () => {
+      row.style.background = t.bgPanel;
+      row.style.borderColor = t.border;
+    });
+  });
+
+  // View buttons
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('mouseenter', () => { btn.style.borderColor = t.borderMid; btn.style.color = t.text; });
+    btn.addEventListener('mouseleave', () => { btn.style.borderColor = t.border; btn.style.color = t.textSub; });
+    btn.addEventListener('click', () => {
+      const sec = btn.dataset.sec;
+      if (sec === 'categories') {
+        setState({ viewModal: 'categories', viewSearch: '', viewSort: 'date' });
+        loadCategoryView();
+      }
+    });
+  });
+
+  // + Add New buttons
+  document.querySelectorAll('.addnew-btn').forEach(btn => {
+    btn.addEventListener('mouseenter', () => btn.style.opacity = '0.8');
+    btn.addEventListener('mouseleave', () => btn.style.opacity = '1');
+    btn.addEventListener('click', () => {
+      const sec = btn.dataset.sec;
+      setState({ addModal: sec, catForm: { name:'', code:'', category:'' }, catErrors: {}, catSaved: false,
+        prodErrors: {}, prodSaved: false });
+    });
+  });
+
+  // ── VIEW MODAL events
+  document.getElementById('close-view')?.addEventListener('click', () => setState({ viewModal: null }));
+  document.getElementById('view-overlay')?.addEventListener('click', e => {
+    if (e.target === e.currentTarget) setState({ viewModal: null });
+  });
+
+  document.getElementById('view-search')?.addEventListener('input', e => {
+    S.viewSearch = e.target.value; render();
+  });
+
+  document.getElementById('sort-date')?.addEventListener('click', () => setState({ viewSort: 'date' }));
+  document.getElementById('sort-type')?.addEventListener('click', () => setState({ viewSort: 'type' }));
+
+  document.querySelectorAll('.toggle-active').forEach(btn => {
+    btn.addEventListener('click', () => toggleActive(btn.dataset.id, btn.dataset.active === '1'));
+  });
+  document.querySelectorAll('.del-cat').forEach(btn => {
+    btn.addEventListener('mouseenter', () => { btn.style.background = t.dangerBg; btn.style.borderColor = t.danger; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; btn.style.borderColor = 'transparent'; });
+    btn.addEventListener('click', () => setState({ confirmDelete: btn.dataset.id }));
+  });
+
+  // ── ADD CATEGORY MODAL events
+  document.getElementById('close-add')?.addEventListener('click', () => setState({ addModal: null }));
+  document.getElementById('add-overlay')?.addEventListener('click', e => {
+    if (e.target === e.currentTarget) setState({ addModal: null });
+  });
+  document.getElementById('cat-cancel')?.addEventListener('click', () => setState({ addModal: null }));
+  document.getElementById('cat-save')?.addEventListener('click', () => { if (!S.catSaving && !S.catSaved) saveCategory(); });
+
+  // Live sync — category form
+  const syncCat = (id, key, transform) => {
+    const el = document.getElementById(id);
+    el?.addEventListener('input', e => {
+      const v = transform ? transform(e.target.value) : e.target.value;
+      if (transform) e.target.value = v;
+      S.catForm[key] = v;
+      if (S.catErrors[key]) { S.catErrors[key] = null; render(); }
+    });
+  };
+  syncCat('cat-name', 'name');
+  syncCat('cat-code', 'code', v => v.toUpperCase());
+  syncCat('cat-category', 'category');
+
+  // ── ADD PRODUCT MODAL events
+  document.getElementById('prod-clear')?.addEventListener('click', () => {
+    setState({ prodForm: { category:'', size:'', name:'', cost:'', discount:'', labelPrice:'', stock:'', barcode:'', lotNo:'', designNo:'', color:'', supplier:'', owner:'Obello (O)' }, prodImagePreview: null, prodErrors: {} });
+  });
+  document.getElementById('prod-save')?.addEventListener('click', () => { if (!S.prodSaving && !S.prodSaved) saveProduct(); });
+
+  // Live sync — product form (re-render for SKU live update)
+  const syncProd = (id, key, rerender=false) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('change', e => { S.prodForm[key] = e.target.value; if(rerender) render(); else { if(S.prodErrors[key]){S.prodErrors[key]=null;render();} } });
+    el.addEventListener('input', e => { S.prodForm[key] = e.target.value; if(rerender) render(); });
+  };
+  syncProd('prod-category', 'category', true);
+  syncProd('prod-size',     'size',     true);
+  syncProd('prod-name',     'name');
+  syncProd('prod-cost',     'cost');
+  syncProd('prod-discount', 'discount');
+  syncProd('prod-label',    'labelPrice');
+  syncProd('prod-stock',    'stock',    true);
+  syncProd('prod-barcode',  'barcode');
+  syncProd('prod-lotno',    'lotNo',    true);
+  syncProd('prod-designno', 'designNo', true);
+  syncProd('prod-color',    'color');
+  syncProd('prod-supplier', 'supplier', true);
+  syncProd('prod-owner',    'owner');
+
+  // Image upload
+  document.getElementById('img-input')?.addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => setState({ prodImagePreview: ev.target.result });
+    reader.readAsDataURL(file);
+  });
+
+  // Delete confirm
+  document.getElementById('del-cancel')?.addEventListener('click', () => setState({ confirmDelete: null }));
+  document.getElementById('del-overlay')?.addEventListener('click', e => { if(e.target===e.currentTarget) setState({ confirmDelete: null }); });
+  document.getElementById('del-confirm')?.addEventListener('click', () => deleteCategory(S.confirmDelete));
+
+  // Error clear
+  document.getElementById('clear-err')?.addEventListener('click', () => setState({ dbError: null }));
+
+  // Focus first field
+  if (S.addModal === 'categories' && !S.catSaving) {
+    setTimeout(() => document.getElementById('cat-name')?.focus(), 60);
+  }
+
+  // Field focus styles
+  ['cat-name','cat-code','cat-category','prod-name','prod-cost','prod-discount','prod-label','prod-stock','prod-barcode','prod-lotno','prod-designno','prod-color'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('focus', () => el.style.borderColor = t.borderFocus);
+    el.addEventListener('blur',  () => el.style.borderColor = t.inputBorder);
+  });
+}
+
+// ─── Boot
+render();
+</script>
+</body>
+</html>

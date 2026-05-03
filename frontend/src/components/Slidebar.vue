@@ -9,6 +9,7 @@ import { useAuthStore } from '../store/auth'
 const props = defineProps<{ isLight: boolean }>()
 const emit  = defineEmits<{ (e: 'update:isLight', val: boolean): void }>()
 
+
 const router = useRouter()
 const route  = useRoute()
 const auth   = useAuthStore()
