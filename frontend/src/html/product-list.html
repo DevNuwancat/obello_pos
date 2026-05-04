@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Obello POS V2.0 — Product List</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* ── THEME TOKENS ─────────────────────────────── */
+  :root {
+    --bg:        #f0ede8;
+    --surface:   #ffffff;
+    --surface2:  #f7f5f2;
+    --border:    #e2ddd7;
+    --text:      #1a1a1a;
+    --text-sub:  #6b6660;
+    --accent:    #1a1a1a;
+    --accent-fg: #ffffff;
+    --red:       #e05252;
+    --sidebar-w: 240px;
+    --radius:    12px;
+    --shadow:    0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(0,0,0,.04);
+  }
+  [data-theme="dark"] {
+    --bg:        #111110;
+    --surface:   #1c1c1b;
+    --surface2:  #242423;
+    --border:    #2e2e2c;
+    --text:      #f0ede8;
+    --text-sub:  #7a7672;
+    --accent:    #f0ede8;
+    --accent-fg: #111110;
+    --shadow:    0 1px 3px rgba(0,0,0,.4), 0 4px 16px rgba(0,0,0,.2);
+  }
+
+  /* ── RESET ────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+    transition: background .25s, color .25s;
+  }
+
+  /* ── SIDEBAR ──────────────────────────────────── */
+  .sidebar {
+    width: var(--sidebar-w);
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    z-index: 100;
+    transition: background .25s, border-color .25s;
+  }
+  .sidebar-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand-icon {
+    width: 36px; height: 36px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-radius: 8px;
+    display: grid; place-items: center;
+    font-weight: 600; font-size: 15px;
+  }
+  .brand-name { font-weight: 600; font-size: 14px; line-height: 1.2; }
+  .brand-ver  { font-size: 11px; color: var(--text-sub); font-family: 'DM Mono', monospace; }
+
+  .sidebar-nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    font-size: 14px; font-weight: 400;
+    color: var(--text-sub);
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active {
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-weight: 500;
+  }
+  .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+  .sidebar-footer {
+    padding: 14px 12px;
+    border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .user-row {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .user-avatar {
+    width: 32px; height: 32px; border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-fg);
+    display: grid; place-items: center;
+    font-size: 13px; font-weight: 600;
+  }
+  .user-name { font-size: 13px; font-weight: 500; }
+  .user-role { font-size: 11px; color: var(--text-sub); text-transform: uppercase; letter-spacing: .04em; }
+  .theme-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 2px;
+  }
+  .theme-label { font-size: 13px; color: var(--text-sub); display: flex; align-items: center; gap: 7px; }
+  .toggle-pill {
+    width: 40px; height: 22px;
+    background: var(--border);
+    border-radius: 99px;
+    position: relative;
+    cursor: pointer;
+    transition: background .2s;
+  }
+  .toggle-pill.on { background: var(--accent); }
+  .toggle-pill::after {
+    content: '';
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--surface);
+    position: absolute;
+    top: 3px; left: 3px;
+    transition: transform .2s;
+  }
+  .toggle-pill.on::after { transform: translateX(18px); }
+  .sidebar-version {
+    text-align: center;
+    font-size: 10px;
+    color: var(--text-sub);
+    font-family: 'DM Mono', monospace;
+    letter-spacing: .06em;
+    padding-top: 4px;
+  }
+
+  /* ── MAIN ─────────────────────────────────────── */
+  .main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* ── PAGE HEADER ──────────────────────────────── */
+  .page-header {
+    padding: 32px 32px 0;
+  }
+  .page-title { font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
+  .page-sub   { font-size: 13px; color: var(--text-sub); margin-top: 2px; }
+
+  /* ── TOOLBAR ──────────────────────────────────── */
+  .toolbar {
+    padding: 20px 32px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .select-wrap { position: relative; }
+  .select-wrap select {
+    appearance: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    padding: 8px 36px 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    outline: none;
+    transition: border-color .15s;
+    min-width: 180px;
+  }
+  .select-wrap select:focus { border-color: var(--text-sub); }
+  .select-wrap::after {
+    content: '';
+    position: absolute;
+    right: 12px; top: 50%;
+    transform: translateY(-50%);
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid var(--text-sub);
+    pointer-events: none;
+  }
+  .search-box {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    flex: 1; max-width: 280px;
+  }
+  .search-box svg { width: 15px; height: 15px; color: var(--text-sub); flex-shrink: 0; }
+  .search-box input {
+    border: none; background: transparent;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px; color: var(--text);
+    outline: none; width: 100%;
+  }
+  .search-box input::placeholder { color: var(--text-sub); }
+  .btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px; font-weight: 500;
+    cursor: pointer; border: 1px solid transparent;
+    transition: opacity .15s, background .15s;
+  }
+  .btn-primary { background: var(--accent); color: var(--accent-fg); }
+  .btn-primary:hover { opacity: .85; }
+  .btn-outline {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .btn-outline:hover { background: var(--surface2); }
+  .btn svg { width: 14px; height: 14px; }
+  .toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+
+  /* ── TABLE CONTAINER ──────────────────────────── */
+  .table-wrap {
+    margin: 20px 32px 32px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead tr {
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+  thead th {
+    padding: 11px 14px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: .04em;
+    color: var(--text-sub);
+    white-space: nowrap;
+  }
+  thead th:first-child { padding-left: 20px; width: 54px; }
+  thead th.center { text-align: center; }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background .12s;
+  }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface2); }
+
+  tbody td {
+    padding: 12px 14px;
+    vertical-align: middle;
+    color: var(--text);
+  }
+  tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 'DM Mono', monospace; font-size: 12px; }
+
+  .sku-cell {
+    font-family: 'DM Mono', monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--text);
+  }
+  .name-cell { font-weight: 500; }
+  .date-cell { color: var(--text-sub); font-size: 12px; }
+  .price-cell { font-family: 'DM Mono', monospace; font-size: 12.5px; }
+  .qty-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px; height: 22px;
+    border-radius: 6px;
+    font-size: 12px; font-weight: 600;
+    font-family: 'DM Mono', monospace;
+  }
+  .qty-badge.low { background: #fee2e2; color: #dc2626; }
+  [data-theme="dark"] .qty-badge.low { background: rgba(220,38,38,.18); color: #f87171; }
+  .qty-badge.ok  { background: #dcfce7; color: #16a34a; }
+  [data-theme="dark"] .qty-badge.ok  { background: rgba(22,163,74,.15); color: #4ade80; }
+  .center-cell { text-align: center; }
+
+  .product-thumb {
+    width: 44px; height: 44px;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    display: block;
+  }
+  .thumb-placeholder {
+    width: 44px; height: 44px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    display: grid; place-items: center;
+    color: var(--text-sub);
+  }
+  .thumb-placeholder svg { width: 18px; height: 18px; }
+
+  .owner-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 12px; font-weight: 500;
+  }
+  .owner-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* ── ACTION BUTTONS ───────────────────────────── */
+  .actions { display: flex; gap: 4px; justify-content: flex-end; align-items: center; }
+  .action-btn {
+    width: 32px; height: 32px;
+    display: grid; place-items: center;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    cursor: pointer;
+    color: var(--text-sub);
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .action-btn:hover { background: var(--surface2); color: var(--text); }
+  .action-btn.danger:hover { background: #fee2e2; color: #dc2626; border-color: #fca5a5; }
+  [data-theme="dark"] .action-btn.danger:hover { background: rgba(220,38,38,.18); color: #f87171; border-color: rgba(220,38,38,.3); }
+  .action-btn svg { width: 14px; height: 14px; }
+
+  /* ── PAGINATION ───────────────────────────────── */
+  .pagination {
+    padding: 14px 20px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-top: 1px solid var(--border);
+    background: var(--surface2);
+  }
+  .page-info { font-size: 12px; color: var(--text-sub); }
+  .page-btns { display: flex; gap: 4px; }
+  .page-btn {
+    width: 30px; height: 30px;
+    display: grid; place-items: center;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    color: var(--text);
+    transition: background .12s;
+  }
+  .page-btn:hover { background: var(--bg); }
+  .page-btn.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .page-btn:disabled { opacity: .35; cursor: default; }
+
+  /* ── STATS BAR ────────────────────────────────── */
+  .stats-bar {
+    display: flex; gap: 16px;
+    padding: 0 32px 4px;
+    flex-wrap: wrap;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 20px;
+    flex: 1; min-width: 140px;
+    box-shadow: var(--shadow);
+  }
+  .stat-label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
+  .stat-value { font-size: 22px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; font-family: 'DM Mono', monospace; }
+  .stat-sub { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
+
+  /* ── MODAL OVERLAY ────────────────────────────── */
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.45);
+    z-index: 200;
+    place-items: center;
+  }
+  .modal-overlay.open { display: grid; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    width: 440px;
+    max-width: 95vw;
+    box-shadow: 0 20px 60px rgba(0,0,0,.25);
+    animation: popIn .2s ease;
+  }
+  @keyframes popIn { from { transform: scale(.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  .modal-title { font-size: 17px; font-weight: 600; margin-bottom: 20px; }
+  .modal-form { display: flex; flex-direction: column; gap: 14px; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-label { font-size: 12px; font-weight: 500; color: var(--text-sub); text-transform: uppercase; letter-spacing: .05em; }
+  .form-input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    outline: none;
+    transition: border-color .15s;
+  }
+  .form-input:focus { border-color: var(--text-sub); }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+  /* ── TOAST ────────────────────────────────────── */
+  .toast {
+    position: fixed; bottom: 24px; right: 24px;
+    background: var(--accent); color: var(--accent-fg);
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-size: 13px; font-weight: 500;
+    box-shadow: 0 4px 20px rgba(0,0,0,.25);
+    z-index: 300;
+    transform: translateY(80px); opacity: 0;
+    transition: transform .3s, opacity .3s;
+  }
+  .toast.show { transform: translateY(0); opacity: 1; }
+
+  /* ── SCROLLBAR ────────────────────────────────── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+  /* ── ROW ENTER ANIMATION ──────────────────────── */
+  tbody tr { animation: rowIn .3s ease both; }
+  @keyframes rowIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  tbody tr:nth-child(1) { animation-delay: .03s; }
+  tbody tr:nth-child(2) { animation-delay: .06s; }
+  tbody tr:nth-child(3) { animation-delay: .09s; }
+  tbody tr:nth-child(4) { animation-delay: .12s; }
+  tbody tr:nth-child(5) { animation-delay: .15s; }
+  tbody tr:nth-child(6) { animation-delay: .18s; }
+  tbody tr:nth-child(7) { animation-delay: .21s; }
+  tbody tr:nth-child(8) { animation-delay: .24s; }
+</style>
+</head>
+<body>
+
+<!-- ── SIDEBAR ─────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">O</div>
+    <div>
+      <div class="brand-name">obello</div>
+      <div class="brand-ver">POS V2.0</div>
+    </div>
+  </div>
+
+  <nav class="sidebar-nav">
+    <div class="nav-item" onclick="location.href='#'">
+      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-1.4 6M17 13l1.4 6M9 21a1 1 0 100-2 1 1 0 000 2zm10 0a1 1 0 100-2 1 1 0 000 2z"/></svg>
+      Cart
+    </div>
+    <div class="nav-item" onclick="location.href='#'">
+      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+      Add New
+    </div>
+    <div class="nav-item active">
+      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+      Product List
+    </div>
+    <div class="nav-item" onclick="location.href='#'">
+      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+      Today Business
+    </div>
+    <div class="nav-item" onclick="location.href='#'">
+      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6l4 2"/></svg>
+      Owner Earnings
+    </div>
+    <div class="nav-item" onclick="location.href='#'">
+      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path stroke-linecap="round" stroke-linejoin="round" d="M2 10h20"/></svg>
+      Pay Later List
+    </div>
+  </nav>
+
+  <div class="sidebar-footer">
+    <div class="user-row">
+      <div class="user-avatar">S</div>
+      <div>
+        <div class="user-name">Shashika Nuwan</div>
+        <div class="user-role">Admin</div>
+      </div>
+    </div>
+    <div class="theme-row">
+      <span class="theme-label">
+        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path stroke-linecap="round" d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+        <span id="theme-label-text">Dark mode</span>
+      </span>
+      <div class="toggle-pill" id="themeToggle" onclick="toggleTheme()"></div>
+    </div>
+    <div class="sidebar-version">OBELLO · VERSION 2.0</div>
+  </div>
+</aside>
+
+<!-- ── MAIN CONTENT ────────────────────────────── -->
+<main class="main">
+  <div class="page-header">
+    <h1 class="page-title">Product List</h1>
+    <p class="page-sub">Browse and manage your inventory</p>
+  </div>
+
+  <!-- Stats Bar -->
+  <div class="stats-bar" style="margin-top:24px;">
+    <div class="stat-card">
+      <div class="stat-label">Total Products</div>
+      <div class="stat-value" id="stat-total">—</div>
+      <div class="stat-sub">across all categories</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Low Stock</div>
+      <div class="stat-value" id="stat-low" style="color:var(--red);">—</div>
+      <div class="stat-sub">qty = 1</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Label Price</div>
+      <div class="stat-value" id="stat-avg">—</div>
+      <div class="stat-sub">Rs. per item</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Categories</div>
+      <div class="stat-value" id="stat-cats">—</div>
+      <div class="stat-sub">active</div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="select-wrap">
+      <select id="catFilter" onchange="applyFilter()">
+        <option value="">All Categories</option>
+        <option value="T Shirt">T-Shirts</option>
+        <option value="Polo">Polo</option>
+        <option value="Shorts">Shorts</option>
+        <option value="Trouser">Trousers</option>
+      </select>
+    </div>
+
+    <div class="search-box">
+      <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
+      <input type="text" id="searchInput" placeholder="Search product or SKU…" oninput="applyFilter()" />
+    </div>
+
+    <div class="toolbar-right">
+      <button class="btn btn-outline" onclick="exportCSV()">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+        Export
+      </button>
+      <button class="btn btn-primary" onclick="openAddModal()">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+        Add Product
+      </button>
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Date</th>
+          <th>SKU</th>
+          <th>Name</th>
+          <th class="center">Image</th>
+          <th class="center">Qty</th>
+          <th>Cost (Rs.)</th>
+          <th>Dis. (Rs.)</th>
+          <th>Label (Rs.)</th>
+          <th>Owner</th>
+          <th style="text-align:right; padding-right:20px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="productTableBody"></tbody>
+    </table>
+
+    <div class="pagination">
+      <span class="page-info" id="pageInfo">Showing 1–10 of 0</span>
+      <div class="page-btns" id="pageBtns"></div>
+    </div>
+  </div>
+</main>
+
+<!-- ── ADD / EDIT MODAL ────────────────────────── -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModalOnOverlay(event)">
+  <div class="modal">
+    <div class="modal-title" id="modalTitle">Add Product</div>
+    <div class="modal-form">
+      <input type="hidden" id="editId" value="" />
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">SKU</label>
+          <input class="form-input" id="f-sku" placeholder="OO/000/00/A00/S" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Date</label>
+          <input class="form-input" id="f-date" type="date" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Product Name</label>
+        <input class="form-input" id="f-name" placeholder="T Shirt (Wetlook) XL" />
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Cost (Rs.)</label>
+          <input class="form-input" id="f-cost" type="number" placeholder="350" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Dis. (Rs.)</label>
+          <input class="form-input" id="f-dis" type="number" placeholder="750" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Label (Rs.)</label>
+          <input class="form-input" id="f-label" type="number" placeholder="1150" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Qty</label>
+          <input class="form-input" id="f-qty" type="number" placeholder="1" />
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Owner</label>
+          <input class="form-input" id="f-owner" placeholder="Obello" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <input class="form-input" id="f-cat" placeholder="T Shirt" />
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveProduct()">Save Product</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── TOAST ───────────────────────────────────── -->
+<div class="toast" id="toast"></div>
+
+<script>
+/* ── DATA ─────────────────────────────────────── */
+let products = [
+  { id:467, date:'29/01/2026', sku:'OO/151/03/A21/XL', name:'T Shirt (Wetlook) XL', qty:1, cost:350, dis:750, label:1150, owner:'Obello', cat:'T Shirt', img:'' },
+  { id:468, date:'29/01/2026', sku:'OO/151/02/A21/M',  name:'T Shirt (Wetlook) M',  qty:1, cost:350, dis:750, label:1150, owner:'Obello', cat:'T Shirt', img:'' },
+  { id:469, date:'29/01/2026', sku:'OO/151/02/A21/L',  name:'T Shirt (Wetlook) L',  qty:1, cost:350, dis:750, label:1150, owner:'Obello', cat:'T Shirt', img:'' },
+  { id:470, date:'29/01/2026', sku:'OO/151/02/A21/XL', name:'T Shirt (Wetlook) XL', qty:4, cost:350, dis:750, label:1150, owner:'Obello', cat:'T Shirt', img:'' },
+  { id:471, date:'29/01/2026', sku:'OO/151/01/A21/M',  name:'T Shirt (Wetlook) M',  qty:1, cost:350, dis:750, label:1150, owner:'Obello', cat:'T Shirt', img:'' },
+  { id:472, date:'28/01/2026', sku:'OO/150/01/A21/S',  name:'Polo Shirt Classic S',  qty:6, cost:420, dis:850, label:1350, owner:'Obello', cat:'Polo',    img:'' },
+  { id:473, date:'28/01/2026', sku:'OO/150/01/A21/M',  name:'Polo Shirt Classic M',  qty:3, cost:420, dis:850, label:1350, owner:'Obello', cat:'Polo',    img:'' },
+  { id:474, date:'27/01/2026', sku:'OO/149/01/B21/32', name:'Trouser Slim Fit 32',   qty:2, cost:680, dis:1200,label:1800, owner:'Obello', cat:'Trouser',  img:'' },
+  { id:475, date:'27/01/2026', sku:'OO/149/01/B21/34', name:'Trouser Slim Fit 34',   qty:1, cost:680, dis:1200,label:1800, owner:'Obello', cat:'Trouser',  img:'' },
+  { id:476, date:'26/01/2026', sku:'OO/148/02/A21/M',  name:'Shorts Casual M',       qty:5, cost:280, dis:550, label:900,  owner:'Obello', cat:'Shorts',   img:'' },
+  { id:477, date:'26/01/2026', sku:'OO/148/02/A21/L',  name:'Shorts Casual L',       qty:1, cost:280, dis:550, label:900,  owner:'Obello', cat:'Shorts',   img:'' },
+  { id:478, date:'25/01/2026', sku:'OO/147/01/A21/XL', name:'T Shirt Plain XL',      qty:8, cost:300, dis:620, label:1000, owner:'Obello', cat:'T Shirt',  img:'' },
+];
+let nextId = 479;
+
+/* ── PAGINATION STATE ─────────────────────────── */
+const PER_PAGE = 8;
+let currentPage = 1;
+let filtered = [...products];
+
+/* ── RENDER ───────────────────────────────────── */
+function fmt(n) { return parseFloat(n).toFixed(2); }
+
+function renderTable() {
+  const tbody = document.getElementById('productTableBody');
+  const start = (currentPage - 1) * PER_PAGE;
+  const slice = filtered.slice(start, start + PER_PAGE);
+
+  tbody.innerHTML = slice.map(p => `
+    <tr>
+      <td>${p.id}</td>
+      <td class="date-cell">${p.date}</td>
+      <td class="sku-cell">${p.sku}</td>
+      <td class="name-cell">${p.name}</td>
+      <td class="center-cell">
+        ${p.img
+          ? `<img class="product-thumb" src="${p.img}" alt="${p.name}" />`
+          : `<div class="thumb-placeholder"><svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-4 4 4"/><path d="M3 15l4 4 4-4 4 4 4-4"/></svg></div>`
+        }
+      </td>
+      <td class="center-cell">
+        <span class="qty-badge ${p.qty <= 1 ? 'low' : 'ok'}">${p.qty}</span>
+      </td>
+      <td class="price-cell">${fmt(p.cost)}</td>
+      <td class="price-cell">${fmt(p.dis)}</td>
+      <td class="price-cell" style="font-weight:600;">${fmt(p.label)}</td>
+      <td><span class="owner-chip"><span class="owner-dot"></span>${p.owner}</span></td>
+      <td>
+        <div class="actions">
+          <button class="action-btn" title="Barcode" onclick="showToast('Barcode: ${p.sku}')">
+            <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M3 5h2M7 5h2M3 12h2M7 12h2M3 19h2M7 19h2M13 5h2M17 5h2M13 12h2M17 12h2M13 19h2M17 19h2"/></svg>
+          </button>
+          <button class="action-btn" title="Label" onclick="showToast('Print label: ${p.name}')">
+            <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path stroke-linecap="round" d="M3 10h18"/></svg>
+          </button>
+          <button class="action-btn" title="View" onclick="viewProduct(${p.id})">
+            <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+          <button class="action-btn" title="Edit" onclick="editProduct(${p.id})">
+            <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+          </button>
+          <button class="action-btn danger" title="Delete" onclick="deleteProduct(${p.id})">
+            <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path stroke-linecap="round" d="M10 11v6M14 11v6"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+
+  /* pagination info */
+  const total = filtered.length;
+  const from  = total === 0 ? 0 : start + 1;
+  const to    = Math.min(start + PER_PAGE, total);
+  document.getElementById('pageInfo').textContent = `Showing ${from}–${to} of ${total}`;
+
+  /* page buttons */
+  const pages = Math.ceil(total / PER_PAGE);
+  const pb = document.getElementById('pageBtns');
+  pb.innerHTML = '';
+  const prev = document.createElement('button');
+  prev.className = 'page-btn';
+  prev.textContent = '‹';
+  prev.disabled = currentPage === 1;
+  prev.onclick = () => { currentPage--; renderTable(); };
+  pb.appendChild(prev);
+
+  for (let i = 1; i <= pages; i++) {
+    const b = document.createElement('button');
+    b.className = 'page-btn' + (i === currentPage ? ' active' : '');
+    b.textContent = i;
+    b.onclick = () => { currentPage = i; renderTable(); };
+    pb.appendChild(b);
+  }
+
+  const next = document.createElement('button');
+  next.className = 'page-btn';
+  next.textContent = '›';
+  next.disabled = currentPage >= pages;
+  next.onclick = () => { currentPage++; renderTable(); };
+  pb.appendChild(next);
+
+  updateStats();
+}
+
+/* ── STATS ────────────────────────────────────── */
+function updateStats() {
+  document.getElementById('stat-total').textContent = products.length;
+  document.getElementById('stat-low').textContent   = products.filter(p => p.qty <= 1).length;
+  const avg = products.reduce((s,p) => s + p.label, 0) / (products.length || 1);
+  document.getElementById('stat-avg').textContent   = Math.round(avg).toLocaleString();
+  const cats = new Set(products.map(p => p.cat)).size;
+  document.getElementById('stat-cats').textContent  = cats;
+}
+
+/* ── FILTER ───────────────────────────────────── */
+function applyFilter() {
+  const cat  = document.getElementById('catFilter').value.toLowerCase();
+  const q    = document.getElementById('searchInput').value.toLowerCase();
+  filtered = products.filter(p =>
+    (!cat || p.cat.toLowerCase().includes(cat)) &&
+    (!q   || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q))
+  );
+  currentPage = 1;
+  renderTable();
+}
+
+/* ── CRUD ─────────────────────────────────────── */
+function deleteProduct(id) {
+  if (!confirm('Delete this product?')) return;
+  products = products.filter(p => p.id !== id);
+  applyFilter();
+  showToast('Product deleted');
+}
+
+function viewProduct(id) {
+  const p = products.find(x => x.id === id);
+  if (p) showToast(`${p.name} — SKU: ${p.sku}`);
+}
+
+function editProduct(id) {
+  const p = products.find(x => x.id === id);
+  if (!p) return;
+  document.getElementById('modalTitle').textContent = 'Edit Product';
+  document.getElementById('editId').value  = id;
+  document.getElementById('f-sku').value   = p.sku;
+  document.getElementById('f-date').value  = toInputDate(p.date);
+  document.getElementById('f-name').value  = p.name;
+  document.getElementById('f-cost').value  = p.cost;
+  document.getElementById('f-dis').value   = p.dis;
+  document.getElementById('f-label').value = p.label;
+  document.getElementById('f-qty').value   = p.qty;
+  document.getElementById('f-owner').value = p.owner;
+  document.getElementById('f-cat').value   = p.cat;
+  openModal();
+}
+
+function toInputDate(d) {
+  const [dd,mm,yyyy] = d.split('/');
+  return `${yyyy}-${mm}-${dd}`;
+}
+function fromInputDate(d) {
+  const [y,m,dd] = d.split('-');
+  return `${dd}/${m}/${y}`;
+}
+
+function openAddModal() {
+  document.getElementById('modalTitle').textContent = 'Add Product';
+  document.getElementById('editId').value = '';
+  ['f-sku','f-name','f-cost','f-dis','f-label','f-qty','f-owner','f-cat'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-date').value = new Date().toISOString().split('T')[0];
+  openModal();
+}
+
+function openModal()  { document.getElementById('modalOverlay').classList.add('open'); }
+function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
+function closeModalOnOverlay(e) { if (e.target === document.getElementById('modalOverlay')) closeModal(); }
+
+function saveProduct() {
+  const id    = document.getElementById('editId').value;
+  const entry = {
+    sku:   document.getElementById('f-sku').value.trim()  || '—',
+    date:  fromInputDate(document.getElementById('f-date').value) || '—',
+    name:  document.getElementById('f-name').value.trim() || 'Unnamed',
+    cost:  parseFloat(document.getElementById('f-cost').value)  || 0,
+    dis:   parseFloat(document.getElementById('f-dis').value)   || 0,
+    label: parseFloat(document.getElementById('f-label').value) || 0,
+    qty:   parseInt(document.getElementById('f-qty').value)     || 0,
+    owner: document.getElementById('f-owner').value.trim() || 'Obello',
+    cat:   document.getElementById('f-cat').value.trim()   || 'General',
+    img:   '',
+  };
+
+  if (id) {
+    const idx = products.findIndex(p => p.id === parseInt(id));
+    if (idx !== -1) products[idx] = { ...products[idx], ...entry };
+    showToast('Product updated');
+  } else {
+    products.unshift({ id: nextId++, ...entry });
+    showToast('Product added');
+  }
+  closeModal();
+  applyFilter();
+}
+
+/* ── EXPORT CSV ───────────────────────────────── */
+function exportCSV() {
+  const headers = ['ID','Date','SKU','Name','Qty','Cost','Dis','Label','Owner','Category'];
+  const rows = products.map(p => [p.id,p.date,p.sku,p.name,p.qty,p.cost,p.dis,p.label,p.owner,p.cat]);
+  const csv  = [headers, ...rows].map(r => r.join(',')).join('\n');
+  const a    = Object.assign(document.createElement('a'), {
+    href: 'data:text/csv,' + encodeURIComponent(csv),
+    download: 'obello-products.csv',
+  });
+  a.click();
+  showToast('CSV exported');
+}
+
+/* ── TOAST ────────────────────────────────────── */
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._to);
+  t._to = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+/* ── THEME ────────────────────────────────────── */
+function toggleTheme() {
+  const html  = document.documentElement;
+  const isDark = html.dataset.theme === 'dark';
+  html.dataset.theme = isDark ? 'light' : 'dark';
+  document.getElementById('themeToggle').classList.toggle('on', !isDark);
+  document.getElementById('theme-label-text').textContent = isDark ? 'Dark mode' : 'Light mode';
+}
+
+/* ── INIT ─────────────────────────────────────── */
+renderTable();
+</script>
+</body>
+</html>

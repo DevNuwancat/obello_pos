@@ -11,20 +11,38 @@ const SIZES = ['XS','S','M','L','XL','XXL','XXXL','Free Size']
 const OWNERS = ['Obello (O)','Shashika (S)','Admin (A)']
 
 // ── SUPABASE: CATEGORIES ──
-type Category = { id: string; name: string; code: string }
-const clothCategories    = ref<Category[]>([])
-// We store the full category object so we can use its code in the SKU
-const selectedCategory   = ref<Category | null>(null)
+type Category = { id: string; name: string; code: string; type: string }
 
-async function getClothCategories() {
+// All active categories from the database (all types)
+const allCategories    = ref<Category[]>([])
+// The full selected sub-category object (for SKU code)
+const selectedCategory = ref<Category | null>(null)
+// The selected main category type (e.g. "Clothing & Accessories")
+const selectedType     = ref('')
+
+async function getAllCategories() {
   const { data, error } = await supabase
     .from('categories')
-    .select('id, name, code')
-    .eq('type', 'Clothing & Accessories')
+    .select('id, name, code, type')
     .eq('is_active', true)
   if (error) console.error('Category fetch error:', error)
-  else clothCategories.value = data || []
+  else allCategories.value = data || []
 }
+
+// Unique list of main category types — auto-updates when new types are added in DB
+const categoryTypes = computed(() => {
+  const seen = new Set<string>()
+  for (const c of allCategories.value) seen.add(c.type)
+  return Array.from(seen).sort()
+})
+
+// Sub-categories filtered by the selected main type
+const subCategories = computed(() =>
+  allCategories.value.filter(c => c.type === selectedType.value)
+)
+
+// When the main type changes, reset the sub-category selection
+watch(selectedType, () => { selectedCategory.value = null })
 
 // ── SUPABASE: SUPPLIERS ──
 type Supplier = { id: string; name: string; code: string }
@@ -43,7 +61,7 @@ async function getSuppliers() {
 // Reload both dropdowns every time the modal opens
 watch(() => props.modelValue, (isOpen) => {
   if (isOpen) {
-    getClothCategories()
+    getAllCategories()
     getSuppliers()
     window.addEventListener('keydown', onKey)
   } else {
@@ -153,6 +171,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 
 // ── RESET ──
 function resetForm() {
+  selectedType.value      = ''
   selectedCategory.value  = null
   selectedSupplier.value  = null
   size.value          = ''
@@ -180,7 +199,7 @@ function close() {
 
 // ── SAVE ──
 async function save() {
-  if (!name.value.trim() || !selectedCategory.value || !cost.value) {
+  if (!name.value.trim() || !selectedType.value || !selectedCategory.value || !cost.value) {
     showErrors.value = true
     return
   }
@@ -257,29 +276,46 @@ async function save() {
             <!-- ═══ LEFT COLUMN ═══ -->
             <div class="col">
 
-              <!-- Category + Size -->
+              <!-- Main Category (type) + Sub Category, then Size -->
               <div class="row-2">
+                <!-- Left: Main Category Type -->
                 <div class="form-field">
-                  <label class="form-label">Category <span class="req">*</span></label>
+                  <label class="form-label">Main Category <span class="req">*</span></label>
+                  <select
+                    v-model="selectedType"
+                    class="form-input form-select"
+                    :class="{ error: showErrors && !selectedType }"
+                  >
+                    <option value="">Select type</option>
+                    <option v-for="t in categoryTypes" :key="t" :value="t">{{ t }}</option>
+                  </select>
+                  <span v-if="showErrors && !selectedType" class="form-error">Required</span>
+                </div>
+                <!-- Right: Sub Category filtered by main type -->
+                <div class="form-field">
+                  <label class="form-label">Sub Category <span class="req">*</span></label>
                   <select
                     v-model="selectedCategory"
                     class="form-input form-select"
                     :class="{ error: showErrors && !selectedCategory }"
+                    :disabled="!selectedType"
                   >
-                    <option :value="null">Select category</option>
-                    <option v-for="c in clothCategories" :key="c.id" :value="c">
+                    <option :value="null">{{ selectedType ? 'Select category' : 'Pick main first' }}</option>
+                    <option v-for="c in subCategories" :key="c.id" :value="c">
                       {{ c.code }} – {{ c.name }}
                     </option>
                   </select>
                   <span v-if="showErrors && !selectedCategory" class="form-error">Required</span>
                 </div>
-                <div class="form-field">
-                  <label class="form-label">Size</label>
-                  <select v-model="size" class="form-input form-select">
-                    <option value="">Select size</option>
-                    <option v-for="s in SIZES" :key="s" :value="s">{{ s }}</option>
-                  </select>
-                </div>
+              </div>
+
+              <!-- Size — full width below the two category dropdowns -->
+              <div class="form-field">
+                <label class="form-label">Size</label>
+                <select v-model="size" class="form-input form-select">
+                  <option value="">Select size</option>
+                  <option v-for="s in SIZES" :key="s" :value="s">{{ s }}</option>
+                </select>
               </div>
 
               <!-- Product Name (auto-generated, editable) -->
@@ -335,7 +371,7 @@ async function save() {
                 <span v-if="showErrors && !cost" class="form-error">Cost price is required</span>
               </div>
 
-              <!-- Stock — simple input with live preview -->
+              <!-- Stock — simple number input -->
               <div class="form-field">
                 <label class="form-label">Stock Quantity</label>
                 <input
@@ -345,11 +381,6 @@ async function save() {
                   class="form-input"
                   placeholder="0"
                 />
-                <!-- Live preview: shows the number as big text so you can see it clearly -->
-                <div class="stock-preview">
-                  <div class="stock-preview-num">{{ stock || '0' }}</div>
-                  <div class="stock-preview-label">units to add</div>
-                </div>
               </div>
 
               <!-- Barcode -->
@@ -434,6 +465,19 @@ async function save() {
                 <div class="info-card-sub">
                   Owner · Supplier / Lot / Design / Category / Size
                 </div>
+              </div>
+
+              <!-- Stock preview — shows the entered quantity in large text -->
+              <div class="stock-preview">
+                <div class="stock-preview-left">
+                  <div class="stock-preview-num">{{ stock || '0' }}</div>
+                  <div class="stock-preview-label">units to add</div>
+                </div>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)">
+                  <path d="M12 2l9 4.5v9L12 20 3 15.5v-9L12 2"/>
+                  <line x1="12" y1="2" x2="12" y2="20"/>
+                  <line x1="3" y1="6.5" x2="21" y2="6.5"/>
+                </svg>
               </div>
 
               <!-- Label preview — looks like the physical price tag -->
@@ -693,6 +737,7 @@ async function save() {
 .form-input::placeholder { color: var(--text-muted); opacity: 0.6; }
 .form-input:focus { border-color: var(--border-focus); }
 .form-input.error { border-color: var(--danger); }
+.form-input:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .form-select {
   appearance: none;
@@ -718,29 +763,33 @@ async function save() {
 
 .form-error { font-size: 11px; color: var(--danger); }
 
-/* ── STOCK PREVIEW ── */
-/* Live preview that appears below the stock input */
+/* ── STOCK PREVIEW (right column) ── */
 .stock-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.stock-preview-left {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 10px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  margin-top: 2px;
 }
 
 .stock-preview-num {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: 28px;
+  font-size: 30px;
   color: var(--text);
   line-height: 1;
 }
 
 .stock-preview-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;

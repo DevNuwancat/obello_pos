@@ -30,17 +30,10 @@ const sections = [
   },
   {
     key: 'cloth-products',
-    label: 'Cloths Products',
-    description: 'Add new clothing items to your inventory',
+    label: 'Cloths Products & Other Accessories',
+    description: 'Add new clothing items & other accessories to your inventory',
     color: '#808080', 
     icon: '<i class="fa-solid fa-shirt"></i>' 
-  },
-  {
-    key: 'accessories',
-    label: 'Accessories & Others',
-    description: 'Manage accessories and miscellaneous products',
-    color: '#808080',
-    icon: '<i class="fa-solid fa-cube"></i>' 
   },
 ]
 
