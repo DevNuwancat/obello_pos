@@ -14,13 +14,17 @@ const router = createRouter({
     routes: [
         { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
 
-        { path: '/', name: 'pos', component: () => import('../views/POSView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
+        { path: '/', name: 'pos', component: () => import('../views/POSView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager', 'cashier'] } },
+
+        { path: '/users', name: 'users', component: () => import('../views/UserManagementView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
 
         { path: '/add-new', name: 'add-new', component: () => import('../views/AddNewView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
         { path: '/product-list', name: 'product-list', component: () => import('../views/ProductListView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
         { path: '/today-business', name: 'today-business', component: () => import('../views/TodayBusinessView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
+
+        { path: '/barcode-print', name: 'barcode-print', component: () => import('../views/BarcodePrint.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
         { path: '/owner-earnings', name: 'owner-earnings', component: () => import('../views/OwnerEarningsView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
 

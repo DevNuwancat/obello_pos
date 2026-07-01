@@ -15,17 +15,33 @@ const route  = useRoute()
 const auth   = useAuthStore()
 
 // ── NAV ──
-const navItems = [
-  { key: 'pos',            label: 'Cart',          path: '/' },
-  { key: 'add-new',        label: 'Add New',        path: '/add-new' },
-  { key: 'product-list',   label: 'Product List',   path: '/product-list' },
-  { key: 'today-business', label: 'Today Business', path: '/today-business' },
-  { key: 'owner-earnings', label: 'Owner Earnings', path: '/owner-earnings' },
-  { key: 'pay-later',      label: 'Pay Later List', path: '/pay-later' },
-]
+// Cashiers can only access the Cart. Admins additionally get the Users page.
+const navItems = computed(() => {
+  if (auth.userRole === 'cashier') {
+    return [{ key: 'pos', label: 'Cart', path: '/' }]
+  }
+  const items = [
+    { key: 'pos',            label: 'Cart',          path: '/' },
+    { key: 'add-new',        label: 'Add New',        path: '/add-new' },
+    { key: 'product-list',   label: 'Product List',   path: '/product-list' },
+    { key: 'barcode-print',  label: 'Barcode Print',  path: '/barcode-print' },
+    { key: 'today-business', label: 'Today Business', path: '/today-business' },
+    { key: 'owner-earnings', label: 'Owner Earnings', path: '/owner-earnings' },
+    { key: 'pay-later',      label: 'Pay Later List', path: '/pay-later' },
+  ]
+  if (auth.isAdmin) items.push({ key: 'users', label: 'Users', path: '/users' })
+  return items
+})
 
 const currentNav  = computed(() => route.name as string)
 const userInitial = computed(() => (auth.userName ?? '?').charAt(0).toUpperCase())
+
+// Full page reload on every nav click (instead of instant in-app switching).
+// This sidesteps pages sometimes showing stale/empty data on soft navigation.
+function goTo(path: string) {
+  if (path === route.path) return
+  window.location.href = path
+}
 
 // ── THEME ──
 // When the toggle is clicked, tell the parent the new value
@@ -64,7 +80,7 @@ async function handleLogout() {
         :key="item.key"
         class="nav-item"
         :class="{ active: currentNav === item.key }"
-        @click="router.push(item.path)"
+        @click="goTo(item.path)"
       >
         <!-- Cart icon -->
         <svg v-if="item.key === 'pos'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
@@ -72,12 +88,16 @@ async function handleLogout() {
         <svg v-else-if="item.key === 'add-new'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <!-- List icon -->
         <svg v-else-if="item.key === 'product-list'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        <!-- Barcode icon -->
+        <svg v-else-if="item.key === 'barcode-print'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke-linecap="round" d="M3 5h2M7 5h2M3 12h2M7 12h2M3 19h2M7 19h2M13 5h2M17 5h2M13 12h2M17 12h2M13 19h2M17 19h2"/></svg>
         <!-- Chart icon -->
         <svg v-else-if="item.key === 'today-business'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <!-- Clock icon -->
         <svg v-else-if="item.key === 'owner-earnings'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
-        <!-- Card icon -->
-        <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <!-- Pay Later card icon -->
+        <svg v-else-if="item.key === 'pay-later'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <!-- Users icon -->
+        <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         {{ item.label }}
       </button>
     </nav>

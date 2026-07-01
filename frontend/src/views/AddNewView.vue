@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
 import SupplierModal from '../components/modals/SupplierModal.vue'
 import ViewSuppliersModal from '../components/modals/ViewSuppliersModal.vue'
 import CategoryModal from '../components/modals/CategoryModal.vue'
 import ViewCategoriesModal from '../components/modals/ViewCategoriesModal.vue'
 import AddClothModal from '../components/modals/AddClothModal.vue'
+
+const router = useRouter()
 
 // ── THEME ──
 // We read from localStorage so the theme stays the same when you switch pages
@@ -121,7 +124,11 @@ const showAddClothModal = computed({
               class="btn-view"
               @click="openModal('view-main-categories')"
             ><i class="fa-regular fa-eye"></i> View</button>
-            <button v-else class="btn-view"><i class="fa-regular fa-eye"></i> View</button>
+            <button
+              v-else-if="section.key === 'cloth-products'"
+              class="btn-view"
+              @click="router.push('/product-list')"
+            ><i class="fa-regular fa-eye"></i> View</button>
             <button class="btn-add" @click="openModal(section.key)">+ Add New</button>
           </div>
         </div>

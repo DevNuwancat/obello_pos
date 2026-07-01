@@ -1,23 +1,36 @@
+<!--
+  EditProductModal.vue — Edit an existing product from the "products" table.
+  Mirrors the same fields as AddClothModal but loads existing data and UPDATEs on save.
+  Also allows changing / uploading an image.
+-->
+
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
 
-const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
-const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
+// ── PROPS & EMITS ──
+// product : the full product row to edit (null = modal hidden)
+// isLight : theme toggle from the parent
+const props = defineProps<{
+  modelValue: boolean
+  isLight: boolean
+  product: any | null
+}>()
+
+const emit = defineEmits<{
+  (e: 'update:modelValue', val: boolean): void
+  (e: 'saved'): void
+}>()
 
 // ── FIXED LISTS ──
-const SIZES = ['XS','S','M','L','XL','XXL','XXXL','Free Size']
-const OWNERS = ['Obello (O)','Shashika (S)','Admin (A)']
+const SIZES  = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Free Size']
+const OWNERS = ['Obello (O)', 'Shashika (S)', 'Admin (A)']
 
 // ── SUPABASE: CATEGORIES ──
 type Category = { id: string; name: string; code: string; type: string }
-
-// All active categories from the database (all types)
 const allCategories    = ref<Category[]>([])
-// The full selected sub-category object (for SKU code)
 const selectedCategory = ref<Category | null>(null)
-// The selected main category type (e.g. "Clothing & Accessories")
 const selectedType     = ref('')
 
 async function getAllCategories() {
@@ -29,25 +42,19 @@ async function getAllCategories() {
   else allCategories.value = data || []
 }
 
-// Unique list of main category types — auto-updates when new types are added in DB
 const categoryTypes = computed(() => {
   const seen = new Set<string>()
   for (const c of allCategories.value) seen.add(c.type)
   return Array.from(seen).sort()
 })
 
-// Sub-categories filtered by the selected main type
 const subCategories = computed(() =>
   allCategories.value.filter(c => c.type === selectedType.value)
 )
 
-// When the main type changes, reset the sub-category selection
-watch(selectedType, () => { selectedCategory.value = null })
-
 // ── SUPABASE: SUPPLIERS ──
 type Supplier = { id: string; name: string; code: string }
 const supplierList     = ref<Supplier[]>([])
-// We store the full supplier object so we can use its code in the SKU
 const selectedSupplier = ref<Supplier | null>(null)
 
 async function getSuppliers() {
@@ -58,22 +65,11 @@ async function getSuppliers() {
   else supplierList.value = data || []
 }
 
-// Reload both dropdowns every time the modal opens
-watch(() => props.modelValue, (isOpen) => {
-  if (isOpen) {
-    getAllCategories()
-    getSuppliers()
-    window.addEventListener('keydown', onKey)
-  } else {
-    window.removeEventListener('keydown', onKey)
-  }
-})
-
 // ── FORM FIELDS ──
 const size          = ref('')
 const name          = ref('')
 const cost          = ref('')
-const sellingPrice  = ref('')   // this is the price shown on the tag (no separate label price)
+const sellingPrice  = ref('')
 const discount      = ref('')
 const superDiscount = ref('')
 const stock         = ref('')
@@ -83,44 +79,23 @@ const designNo      = ref('')
 const color         = ref('')
 const owner         = ref('Obello (O)')
 
-// ── AUTO-NAME ──
-// Automatically fills Product Name as "{Category} {Size} {Color}"
-// Stops auto-filling once the user types something manually
-const nameWasEdited = ref(false)
-
-watch([selectedCategory, size, color], () => {
-  if (nameWasEdited.value) return
-  const parts = [
-    selectedCategory.value?.name,
-    size.value,
-    color.value,
-  ].filter(Boolean)
-  name.value = parts.join(' ')
-})
-
-// ── IMAGE PREVIEW & COMPRESS ──
-const imagePreview = ref<string | null>(null)
-const imageFile    = ref<File | null>(null)
+// ── IMAGE ──
+const imagePreview    = ref<string | null>(null)
+const imageFile       = ref<File | null>(null)
+const existingImgUrl  = ref<string | null>(null)
 
 function compressImage(file: File): Promise<Blob> {
   return new Promise((resolve) => {
     const img = new Image()
     img.onload = () => {
-      // Create a 256×256 canvas
       const canvas = document.createElement('canvas')
       canvas.width  = 256
       canvas.height = 256
       const ctx = canvas.getContext('2d')!
-
-      // Calculate crop to keep center of image (no stretching)
       const minSide = Math.min(img.width, img.height)
       const sx = (img.width  - minSide) / 2
       const sy = (img.height - minSide) / 2
-
-      // Draw cropped & resized image onto 256×256 canvas
       ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, 256, 256)
-
-      // Convert to compressed JPEG (0.7 quality = small file size)
       canvas.toBlob((blob) => resolve(blob!), 'image/jpeg', 0.7)
     }
     img.src = URL.createObjectURL(file)
@@ -130,52 +105,33 @@ function compressImage(file: File): Promise<Blob> {
 async function onImagePick(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
-
-  // Compress to 256×256 JPEG
   const compressed = await compressImage(file)
   imageFile.value  = new File([compressed], 'product.jpg', { type: 'image/jpeg' })
-
-  // Show preview
   const reader = new FileReader()
   reader.onload = (ev) => { imagePreview.value = ev.target?.result as string }
   reader.readAsDataURL(imageFile.value)
 }
 
-// Upload compressed image to Supabase Storage and return the public URL
 async function uploadImage(): Promise<string | null> {
-  if (!imageFile.value) return null
-
-  // Unique file name using timestamp
+  if (!imageFile.value) return existingImgUrl.value
   const fileName = `products/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`
-
   const { error } = await supabase.storage
     .from('product-images')
     .upload(fileName, imageFile.value, { contentType: 'image/jpeg' })
-
-  if (error) { console.error('Image upload error:', error); return null }
-
-  // Get the public URL so we can display the image later
-  const { data } = supabase.storage
-    .from('product-images')
-    .getPublicUrl(fileName)
-
+  if (error) { console.error('Image upload error:', error); return existingImgUrl.value }
+  const { data } = supabase.storage.from('product-images').getPublicUrl(fileName)
   return data.publicUrl
 }
 
 // ── SKU ──
-// New pattern: {OwnerCode}{SupplierCode}/{LotNo}/{DesignNo}/{CategoryCode}/{Size}
-// Example: OPM/12/034/T01/XL
 const sku = computed(() => {
-  // Extract the single letter from e.g. "Obello (O)" → "O"
   const ownerMatch = owner.value.match(/\(([A-Z])\)/)
   const ownerCode  = ownerMatch ? ownerMatch[1] : 'X'
-
   const supCode  = selectedSupplier.value?.code  || 'XX'
   const lot      = lotNo.value                   || '00'
   const des      = designNo.value                || '000'
   const catCode  = selectedCategory.value?.code  || 'XX'
   const sz       = size.value                    || 'X'
-
   return `${ownerCode}${supCode}/${lot}/${des}/${catCode}/${sz}`
 })
 
@@ -214,6 +170,49 @@ async function generateBarcode() {
   }
 }
 
+// ── LOAD PRODUCT DATA INTO FORM ──
+// When the modal opens, fill every field from the product prop
+watch(() => props.modelValue, async (isOpen) => {
+  if (isOpen && props.product) {
+    await getAllCategories()
+    await getSuppliers()
+
+    const p = props.product
+    name.value          = p.name || ''
+    cost.value          = String(p.cost_price ?? '')
+    sellingPrice.value  = String(p.selling_price ?? '')
+    discount.value      = String(p.discount ?? '')
+    superDiscount.value = String(p.super_discount ?? '')
+    stock.value         = String(p.stock ?? '')
+    barcode.value       = p.barcode || ''
+    lotNo.value         = p.lot_no || ''
+    designNo.value      = p.design_no || ''
+    color.value         = p.color || ''
+    owner.value         = p.owner || 'Obello (O)'
+    size.value          = p.size || ''
+    existingImgUrl.value = p.image_url || null
+    imagePreview.value   = p.image_url || null
+    imageFile.value      = null
+
+    // Set main category type
+    selectedType.value = p.main_category || ''
+
+    // Match the sub-category by name
+    setTimeout(() => {
+      const match = allCategories.value.find(c => c.name === p.sub_category && c.type === p.main_category)
+      selectedCategory.value = match || null
+    }, 50)
+
+    // Match supplier by id
+    const supMatch = supplierList.value.find(s => s.id === p.supplier_id)
+    selectedSupplier.value = supMatch || null
+
+    window.addEventListener('keydown', onKey)
+  } else {
+    window.removeEventListener('keydown', onKey)
+  }
+})
+
 // ── FORM STATE ──
 const showErrors = ref(false)
 const saving     = ref(false)
@@ -222,38 +221,15 @@ const showToast  = ref(false)
 
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 
-// ── RESET ──
-function resetForm() {
-  selectedType.value      = ''
-  selectedCategory.value  = null
-  selectedSupplier.value  = null
-  size.value          = ''
-  name.value          = ''
-  cost.value          = ''
-  sellingPrice.value  = ''
-  discount.value      = ''
-  superDiscount.value = ''
-  stock.value         = ''
-  barcode.value       = ''
-  lotNo.value         = ''
-  designNo.value      = ''
-  color.value         = ''
-  owner.value         = 'Obello (O)'
-  imagePreview.value  = null
-  imageFile.value     = null
-  nameWasEdited.value = false
-  showErrors.value    = false
-  saveError.value     = ''
-}
-
 function close() {
   emit('update:modelValue', false)
-  resetForm()
+  showErrors.value = false
+  saveError.value  = ''
 }
 
-// ── SAVE ──
+// ── SAVE (UPDATE) ──
 async function save() {
-  if (!name.value.trim() || !selectedType.value || !selectedCategory.value || !cost.value) {
+  if (!name.value.trim() || !cost.value) {
     showErrors.value = true
     return
   }
@@ -262,37 +238,41 @@ async function save() {
   saveError.value = ''
 
   try {
-    // Upload image first (if one was picked)
     const image_url = await uploadImage()
 
-    const { error } = await supabase.from('products').insert({
-      name:           name.value.trim(),
-      main_category:  selectedType.value,
-      sub_category:   selectedCategory.value?.name,
-      size:           size.value,
-      cost_price:     parseFloat(cost.value)          || 0,
-      selling_price:  parseFloat(sellingPrice.value)  || 0,
-      discount:       parseFloat(discount.value)      || 0,
-      super_discount: parseFloat(superDiscount.value) || 0,
-      stock:          parseInt(stock.value) || 0,
-      barcode:        barcode.value || null,
-      lot_no:         lotNo.value,
-      design_no:      designNo.value,
-      color:          color.value,
-      supplier_id:    selectedSupplier.value?.id || null,
-      owner:          owner.value,
-      sku:            sku.value || null,
-      image_url,
-    })
+    const { error } = await supabase
+      .from('products')
+      .update({
+        name:           name.value.trim(),
+        main_category:  selectedType.value || null,
+        sub_category:   selectedCategory.value?.name || null,
+        size:           size.value,
+        cost_price:     parseFloat(cost.value)          || 0,
+        selling_price:  parseFloat(sellingPrice.value)  || 0,
+        discount:       parseFloat(discount.value)      || 0,
+        super_discount: parseFloat(superDiscount.value) || 0,
+        stock:          parseInt(stock.value) || 0,
+        barcode:        barcode.value || null,
+        lot_no:         lotNo.value,
+        design_no:      designNo.value,
+        color:          color.value,
+        supplier_id:    selectedSupplier.value?.id || null,
+        owner:          owner.value,
+        sku:            sku.value || null,
+        image_url,
+      })
+      .eq('id', props.product.id)
 
     if (error) { saveError.value = error.message; return }
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
+    return
   } finally {
     saving.value = false
   }
 
   showToast.value = true
+  emit('saved')
   close()
   setTimeout(() => { showToast.value = false }, 3000)
 }
@@ -311,8 +291,8 @@ async function save() {
         <!-- ── HEADER ── -->
         <div class="modal-header">
           <div>
-            <div class="modal-title">Add Cloth Product</div>
-            <div class="modal-sub">Fill required fields · Name auto-generates · SKU auto-generates</div>
+            <div class="modal-title">Edit Product</div>
+            <div class="modal-sub">Update product details · changes save to database</div>
           </div>
           <div class="header-right">
             <div class="sku-badge">
@@ -321,8 +301,7 @@ async function save() {
             </div>
             <button class="modal-close" @click="close">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
               </svg>
             </button>
           </div>
@@ -334,41 +313,25 @@ async function save() {
 
             <!-- ═══ LEFT COLUMN ═══ -->
             <div class="col">
-
-              <!-- Main Category (type) + Sub Category, then Size -->
+              <!-- Main Category + Sub Category -->
               <div class="row-2">
-                <!-- Left: Main Category Type -->
                 <div class="form-field">
-                  <label class="form-label">Main Category <span class="req">*</span></label>
-                  <select
-                    v-model="selectedType"
-                    class="form-input form-select"
-                    :class="{ error: showErrors && !selectedType }"
-                  >
+                  <label class="form-label">Main Category</label>
+                  <select v-model="selectedType" class="form-input form-select">
                     <option value="">Select type</option>
                     <option v-for="t in categoryTypes" :key="t" :value="t">{{ t }}</option>
                   </select>
-                  <span v-if="showErrors && !selectedType" class="form-error">Required</span>
                 </div>
-                <!-- Right: Sub Category filtered by main type -->
                 <div class="form-field">
-                  <label class="form-label">Sub Category <span class="req">*</span></label>
-                  <select
-                    v-model="selectedCategory"
-                    class="form-input form-select"
-                    :class="{ error: showErrors && !selectedCategory }"
-                    :disabled="!selectedType"
-                  >
+                  <label class="form-label">Sub Category</label>
+                  <select v-model="selectedCategory" class="form-input form-select" :disabled="!selectedType">
                     <option :value="null">{{ selectedType ? 'Select category' : 'Pick main first' }}</option>
-                    <option v-for="c in subCategories" :key="c.id" :value="c">
-                      {{ c.code }} – {{ c.name }}
-                    </option>
+                    <option v-for="c in subCategories" :key="c.id" :value="c">{{ c.code }} – {{ c.name }}</option>
                   </select>
-                  <span v-if="showErrors && !selectedCategory" class="form-error">Required</span>
                 </div>
               </div>
 
-              <!-- Size — full width below the two category dropdowns -->
+              <!-- Size -->
               <div class="form-field">
                 <label class="form-label">Size</label>
                 <select v-model="size" class="form-input form-select">
@@ -377,69 +340,39 @@ async function save() {
                 </select>
               </div>
 
-              <!-- Product Name (auto-generated, editable) -->
+              <!-- Product Name -->
               <div class="form-field">
-                <label class="form-label">
-                  Product Name <span class="req">*</span>
-                  <span class="form-hint"> · auto-fills from Category + Size + Color</span>
-                </label>
-                <input
-                  v-model="name"
-                  class="form-input"
-                  :class="{ error: showErrors && !name }"
-                  placeholder="e.g. Chinos XL Blue"
-                  @input="nameWasEdited = true"
-                />
+                <label class="form-label">Product Name <span class="req">*</span></label>
+                <input v-model="name" class="form-input" :class="{ error: showErrors && !name }" placeholder="e.g. Chinos XL Blue" />
                 <span v-if="showErrors && !name" class="form-error">Required</span>
               </div>
 
-              <!-- Pricing — 4 inputs in 2×2 grid -->
+              <!-- Pricing -->
               <div class="form-field">
                 <label class="form-label">Pricing <span class="req">*</span></label>
                 <div class="row-2">
                   <div class="input-prefix-wrap">
                     <span class="input-prefix">Rs.</span>
-                    <input
-                      v-model="cost"
-                      type="number"
-                      class="form-input has-prefix"
-                      :class="{ error: showErrors && !cost }"
-                      placeholder="Cost Price"
-                    />
+                    <input v-model="cost" type="number" class="form-input has-prefix" :class="{ error: showErrors && !cost }" placeholder="Cost Price" />
                   </div>
                   <div class="input-prefix-wrap">
                     <span class="input-prefix">Rs.</span>
-                    <input
-                      v-model="sellingPrice"
-                      type="number"
-                      class="form-input has-prefix"
-                      placeholder="Selling Price"
-                    />
+                    <input v-model="sellingPrice" type="number" class="form-input has-prefix" placeholder="Selling Price" />
                   </div>
                 </div>
-                <div class="row-2 sub-labels">
-                  <span>Costing Price</span><span>Original Selling Price (on tag)</span>
-                </div>
+                <div class="row-2 sub-labels"><span>Cost Price</span><span>Selling Price</span></div>
                 <div class="row-2" style="margin-top:8px">
-                  <input v-model="discount"      type="number" class="form-input" placeholder="Discount %" />
-                  <input v-model="superDiscount"  type="number" class="form-input" placeholder="Super Discount %" />
+                  <input v-model="discount" type="number" class="form-input" placeholder="Discount %" />
+                  <input v-model="superDiscount" type="number" class="form-input" placeholder="Super Discount %" />
                 </div>
-                <div class="row-2 sub-labels">
-                  <span>Discount %</span><span>Super Discount %</span>
-                </div>
+                <div class="row-2 sub-labels"><span>Discount %</span><span>Super Discount %</span></div>
                 <span v-if="showErrors && !cost" class="form-error">Cost price is required</span>
               </div>
 
-              <!-- Stock — simple number input -->
+              <!-- Stock -->
               <div class="form-field">
                 <label class="form-label">Stock Quantity</label>
-                <input
-                  v-model="stock"
-                  type="number"
-                  min="0"
-                  class="form-input"
-                  placeholder="0"
-                />
+                <input v-model="stock" type="number" min="0" class="form-input" placeholder="0" />
               </div>
 
               <!-- Barcode -->
@@ -453,34 +386,27 @@ async function save() {
                 </div>
               </div>
 
-              <!-- Lot No / Design No / Color -->
+              <!-- Details: Lot, Design, Color -->
               <div class="form-field">
                 <label class="form-label">Details</label>
                 <div class="row-3">
-                  <input v-model="lotNo"    class="form-input" placeholder="Lot No" />
+                  <input v-model="lotNo" class="form-input" placeholder="Lot No" />
                   <input v-model="designNo" class="form-input" placeholder="Design No" />
-                  <input v-model="color"    class="form-input" placeholder="Color" />
+                  <input v-model="color" class="form-input" placeholder="Color" />
                 </div>
-                <div class="row-3 sub-labels">
-                  <span>Lot Number</span><span>Design No</span><span>Color</span>
-                </div>
+                <div class="row-3 sub-labels"><span>Lot No</span><span>Design No</span><span>Color</span></div>
               </div>
-
             </div>
-            <!-- end LEFT -->
 
             <!-- ═══ RIGHT COLUMN ═══ -->
             <div class="col">
-
               <!-- Supplier + Owner -->
               <div class="row-2">
                 <div class="form-field">
                   <label class="form-label">Supplier</label>
                   <select v-model="selectedSupplier" class="form-input form-select">
                     <option :value="null">Select supplier</option>
-                    <option v-for="s in supplierList" :key="s.id" :value="s">
-                      {{ s.code }} – {{ s.name }}
-                    </option>
+                    <option v-for="s in supplierList" :key="s.id" :value="s">{{ s.code }} – {{ s.name }}</option>
                   </select>
                 </div>
                 <div class="form-field">
@@ -491,19 +417,17 @@ async function save() {
                 </div>
               </div>
 
-              <!-- Image upload (optional) -->
+              <!-- Image upload -->
               <div class="form-field">
-                <label class="form-label">Product Image <span class="form-hint">(optional)</span></label>
+                <label class="form-label">Product Image</label>
                 <div class="img-drop">
                   <img v-if="imagePreview" :src="imagePreview" class="img-preview" />
                   <template v-else>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                      <polyline points="16 16 12 12 8 16"/>
-                      <line x1="12" y1="12" x2="12" y2="21"/>
+                      <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
                       <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
                     </svg>
-                    <span class="img-hint">Click to upload image</span>
-                    <span class="img-sub">PNG, JPG up to 5 MB · Optional</span>
+                    <span class="img-hint">Click to upload or change image</span>
                   </template>
                   <input type="file" accept="image/*" class="img-file-input" @change="onImagePick" />
                 </div>
@@ -521,22 +445,6 @@ async function save() {
                   </div>
                   <div class="info-card-value">{{ sku }}</div>
                 </div>
-                <div class="info-card-sub">
-                  Owner · Supplier / Lot / Design / Category / Size
-                </div>
-              </div>
-
-              <!-- Stock preview — shows the entered quantity in large text -->
-              <div class="stock-preview">
-                <div class="stock-preview-left">
-                  <div class="stock-preview-num">{{ stock || '0' }}</div>
-                  <div class="stock-preview-label">units to add</div>
-                </div>
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--text-muted)">
-                  <path d="M12 2l9 4.5v9L12 20 3 15.5v-9L12 2"/>
-                  <line x1="12" y1="2" x2="12" y2="20"/>
-                  <line x1="3" y1="6.5" x2="21" y2="6.5"/>
-                </svg>
               </div>
 
               <!-- Label preview — looks like the physical price tag -->
@@ -589,24 +497,20 @@ async function save() {
                   </div>
                 </div>
               </div>
-
             </div>
-            <!-- end RIGHT -->
 
           </div>
         </div>
-        <!-- end modal-body -->
 
-        <!-- Error from Supabase -->
+        <!-- Error -->
         <div v-if="saveError" class="save-error">{{ saveError }}</div>
 
         <!-- ── FOOTER ── -->
         <div class="modal-footer">
-          <button class="btn-clear" :disabled="saving" @click="resetForm">Clear Form</button>
           <div class="footer-right">
             <button class="modal-cancel" :disabled="saving" @click="close">Cancel</button>
-            <button class="modal-save"   :disabled="saving" @click="save">
-              {{ saving ? 'Saving…' : 'Add Product' }}
+            <button class="modal-save" :disabled="saving" @click="save">
+              {{ saving ? 'Saving…' : 'Update Product' }}
             </button>
           </div>
         </div>
@@ -615,7 +519,7 @@ async function save() {
     </div>
   </Transition>
 
-  <Toast message="Product added successfully!" :show="showToast" />
+  <Toast message="Product updated successfully!" :show="showToast" />
 </template>
 
 <style scoped>
@@ -636,13 +540,10 @@ async function save() {
   --shadow-lg:   0 16px 60px rgba(0,0,0,0.8);
   --danger:      #ef4444;
 
-  position: fixed;
-  inset: 0;
+  position: fixed; inset: 0;
   background: rgba(0,0,0,0.65);
   backdrop-filter: blur(7px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; align-items: center; justify-content: center;
   z-index: 999;
 }
 
@@ -664,195 +565,57 @@ async function save() {
 }
 
 .modal-box {
-  width: 860px;
-  max-width: calc(100vw - 40px);
-  max-height: 90vh;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-mid);
-  border-radius: 20px;
-  box-shadow: var(--shadow-lg);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  width: 860px; max-width: calc(100vw - 40px); max-height: 90vh;
+  background: var(--bg-panel); border: 1px solid var(--border-mid);
+  border-radius: 20px; box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; overflow: hidden;
 }
 
-/* ── HEADER ── */
 .modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 22px 28px 18px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 28px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0;
 }
-
-.modal-title {
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 19px;
-  letter-spacing: -0.4px;
-  color: var(--text);
-}
-
-.modal-sub {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 3px;
-}
-
+.modal-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 19px; letter-spacing: -0.4px; color: var(--text); }
+.modal-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
 .header-right { display: flex; align-items: center; gap: 10px; }
-
-.sku-badge {
-  padding: 6px 14px;
-  border-radius: 8px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-}
-
-.sku-label {
-  font-size: 9.5px;
-  color: var(--text-muted);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  margin-bottom: 2px;
-}
-
-.sku-value {
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  color: var(--text);
-}
-
-.modal-close {
-  width: 34px; height: 34px;
-  border-radius: 9px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--text-sub);
-  transition: background 0.15s, color 0.15s;
-}
+.sku-badge { padding: 6px 14px; border-radius: 8px; background: var(--bg-card); border: 1px solid var(--border); }
+.sku-label { font-size: 9.5px; color: var(--text-muted); letter-spacing: 0.07em; text-transform: uppercase; margin-bottom: 2px; }
+.sku-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 13px; letter-spacing: 0.04em; color: var(--text); }
+.modal-close { width: 34px; height: 34px; border-radius: 9px; background: var(--bg-card); border: 1px solid var(--border); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-sub); transition: background 0.15s, color 0.15s; }
 .modal-close:hover { background: var(--bg-hover); color: var(--text); }
 
-/* ── BODY ── */
-.modal-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 24px 28px;
-  min-height: 0;
-}
-
-.two-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 24px;
-}
-
+.modal-body { flex: 1; overflow-y: auto; padding: 24px 28px; min-height: 0; }
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 .col { display: flex; flex-direction: column; gap: 16px; }
-
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-
 .sub-labels { margin-top: 4px; padding: 0 2px; }
 .sub-labels span { font-size: 10px; color: var(--text-muted); }
 
-/* ── FORM ── */
 .form-field { display: flex; flex-direction: column; gap: 6px; }
-
-.form-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-sub);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.form-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 400;
-}
-
+.form-label { font-size: 11px; font-weight: 600; color: var(--text-sub); letter-spacing: 0.06em; text-transform: uppercase; }
 .req { color: var(--danger); }
-
-.form-input {
-  width: 100%;
-  padding: 10px 13px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-mid);
-  border-radius: 9px;
-  color: var(--text);
-  font-size: 13.5px;
-  font-family: 'DM Sans', sans-serif;
-  outline: none;
-  transition: border-color 0.15s;
-}
-
+.form-input { width: 100%; padding: 10px 13px; background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: 9px; color: var(--text); font-size: 13.5px; font-family: 'DM Sans', sans-serif; outline: none; transition: border-color 0.15s; }
 .form-input::placeholder { color: var(--text-muted); opacity: 0.6; }
 .form-input:focus { border-color: var(--border-focus); }
 .form-input.error { border-color: var(--danger); }
 .form-input:disabled { opacity: 0.45; cursor: not-allowed; }
-
-.form-select {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23888884' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l5 5 5-5'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 34px;
-  cursor: pointer;
-}
-
+.form-select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23888884' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l5 5 5-5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 34px; cursor: pointer; }
 .input-prefix-wrap { position: relative; display: flex; align-items: center; }
-
-.input-prefix {
-  position: absolute;
-  left: 11px;
-  font-size: 11px;
-  color: var(--text-muted);
-  pointer-events: none;
-  z-index: 1;
-}
-
+.input-prefix { position: absolute; left: 11px; font-size: 11px; color: var(--text-muted); pointer-events: none; z-index: 1; }
 .has-prefix { padding-left: 30px; }
-
 .form-error { font-size: 11px; color: var(--danger); }
 
-/* ── STOCK PREVIEW (right column) ── */
-.stock-preview {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
+.img-drop { height: 130px; border-radius: 12px; border: 1.5px dashed var(--border-mid); background: var(--bg-card); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; cursor: pointer; position: relative; overflow: hidden; color: var(--text-muted); transition: border-color 0.15s; }
+.img-drop:hover { border-color: var(--border-focus); }
+.img-preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 11px; }
+.img-hint { font-size: 13px; color: var(--text-muted); }
+.img-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
-.stock-preview-left {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.stock-preview-num {
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 30px;
-  color: var(--text);
-  line-height: 1;
-}
-
-.stock-preview-label {
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
+.info-card { padding: 14px 16px; border-radius: 12px; background: var(--bg-card); border: 1px solid var(--border); }
+.info-card-top { display: flex; align-items: center; justify-content: space-between; }
+.info-card-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-sub); }
+.info-card-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: 0.04em; color: var(--text); }
 
 /* ── BARCODE ── */
 .barcode-wrap { display: flex; gap: 6px; align-items: center; }
@@ -872,66 +635,8 @@ async function save() {
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
-
 .btn-gen:hover { background: var(--bg-hover); color: var(--text); }
 .btn-gen:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* ── IMAGE UPLOAD ── */
-.img-drop {
-  height: 130px;
-  border-radius: 12px;
-  border: 1.5px dashed var(--border-mid);
-  background: var(--bg-card);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  cursor: pointer;
-  position: relative;
-  overflow: hidden;
-  color: var(--text-muted);
-  transition: border-color 0.15s;
-}
-
-.img-drop:hover { border-color: var(--border-focus); }
-
-.img-preview {
-  position: absolute; inset: 0;
-  width: 100%; height: 100%;
-  object-fit: cover;
-  border-radius: 11px;
-}
-
-.img-hint { font-size: 13px; color: var(--text-muted); }
-.img-sub  { font-size: 11px; color: var(--border-mid); }
-
-.img-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
-
-/* ── INFO CARDS ── */
-.info-card {
-  padding: 14px 16px;
-  border-radius: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-}
-
-.info-card-top { display: flex; align-items: center; justify-content: space-between; }
-
-.info-card-label {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 12px; font-weight: 600;
-  letter-spacing: 0.05em; text-transform: uppercase;
-  color: var(--text-sub);
-}
-
-.info-card-value {
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700; font-size: 15px;
-  letter-spacing: 0.04em; color: var(--text);
-}
-
-.info-card-sub { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
 
 /* ── LABEL PREVIEW CARD ── */
 .label-preview-card { padding: 12px 14px; }
@@ -987,7 +692,6 @@ async function save() {
   white-space: nowrap;
 }
 
-/* SVG barcode in the label preview */
 .label-barcode-svg {
   width: 120px;
   height: 28px;
@@ -1002,7 +706,6 @@ async function save() {
   margin-top: 1px;
 }
 
-/* SKU shown under the barcode number */
 .label-sku {
   font-size: 7px;
   font-family: 'Space Grotesk', monospace;
@@ -1010,7 +713,6 @@ async function save() {
   letter-spacing: 0.04em;
 }
 
-/* Price on the right — rotated like the real label in the PDF */
 .label-right {
   width: 32px;
   background: #f0f0f0;
@@ -1032,65 +734,20 @@ async function save() {
   letter-spacing: 0.03em;
 }
 
-/* ── SAVE ERROR ── */
-.save-error {
-  margin: 0 28px;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: rgba(239,68,68,0.1);
-  border: 1px solid rgba(239,68,68,0.3);
-  color: var(--danger);
-  font-size: 12.5px;
-  flex-shrink: 0;
-}
+.save-error { margin: 0 28px; padding: 10px 14px; border-radius: 8px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); font-size: 12.5px; flex-shrink: 0; }
 
-/* ── FOOTER ── */
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 28px 20px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
+.modal-footer { display: flex; align-items: center; justify-content: flex-end; padding: 16px 28px 20px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .footer-right { display: flex; gap: 8px; }
-
-.btn-clear {
-  padding: 10px 20px; border-radius: 9px;
-  border: 1px solid var(--border); background: transparent;
-  color: var(--text-sub); font-size: 13px;
-  font-family: 'DM Sans', sans-serif; cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.btn-clear:hover { background: var(--bg-hover); color: var(--text); }
-
-.modal-cancel {
-  padding: 10px 20px; border-radius: 9px;
-  border: 1px solid var(--border); background: var(--bg-card);
-  color: var(--text-sub); font-size: 13px;
-  font-family: 'DM Sans', sans-serif; cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
+.modal-cancel { padding: 10px 20px; border-radius: 9px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-sub); font-size: 13px; font-family: 'DM Sans', sans-serif; cursor: pointer; transition: background 0.15s, color 0.15s; }
 .modal-cancel:hover { background: var(--bg-hover); color: var(--text); }
-
-.modal-save {
-  padding: 10px 32px; border-radius: 9px;
-  border: none; background: var(--accent-bg);
-  color: var(--accent-text); font-size: 13px;
-  font-weight: 600; font-family: 'DM Sans', sans-serif;
-  cursor: pointer; min-width: 140px;
-  transition: opacity 0.15s;
-}
+.modal-save { padding: 10px 32px; border-radius: 9px; border: none; background: var(--accent-bg); color: var(--accent-text); font-size: 13px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; min-width: 140px; transition: opacity 0.15s; }
 .modal-save:hover { opacity: 0.85; }
 .modal-save:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* ── SCROLLBAR ── */
 .modal-body::-webkit-scrollbar { width: 4px; }
 .modal-body::-webkit-scrollbar-track { background: transparent; }
 .modal-body::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 2px; }
 
-/* ── FADE ── */
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
-.fade-enter-from,  .fade-leave-to      { opacity: 0; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

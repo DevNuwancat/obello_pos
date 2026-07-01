@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
+import PayLaterModal from '../components/modals/PayLaterModal.vue'
 import { useAuthStore } from "../store/auth"
+import { supabase } from '../lib/supabase'
 
 
 
@@ -10,15 +12,49 @@ const auth = useAuthStore()
 // isLight still lives here because .pos-wrap needs the .light class
 const isLight = ref(localStorage.getItem('theme') === 'light')
 
-// ── PRODUCTS (placeholder until connected to Supabase) ──
-const PRODUCTS = [
-  { id: 1, name: 'Linen Relaxed Trousers', sku: 'OB-LT-001', barcode: '6941234560011', price: 3200, category: 'Bottoms',   stock: 14, image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 3000, royalDiscount: 2600 },
-  { id: 2, name: 'Oversized Poplin Shirt',  sku: 'OB-PS-002', barcode: '6941234560022', price: 2800, category: 'Tops',      stock: 8,  image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 2600, royalDiscount: 2200 },
-  { id: 3, name: 'Wool Blend Overcoat',     sku: 'OB-OC-003', barcode: '6941234560033', price: 8500, category: 'Outerwear', stock: 5,  image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 8000, royalDiscount: 7200 },
-  { id: 4, name: 'Wide Leg Denim',          sku: 'OB-WD-004', barcode: '6941234560044', price: 3800, category: 'Bottoms',   stock: 11, image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 3500, royalDiscount: 3000 },
-  { id: 5, name: 'Cotton Rib Tee',          sku: 'OB-CT-005', barcode: '6941234560055', price: 1400, category: 'Tops',      stock: 22, image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 1200, royalDiscount: 1000 },
-  { id: 6, name: 'Merino Knit Sweater',     sku: 'OB-MK-006', barcode: '6941234560066', price: 4200, category: 'Knitwear',  stock: 7,  image: 'https://i.imgur.com/eWF4Rqy.jpeg', discount: 3900, royalDiscount: 3400 },
-]
+// ── PRODUCTS (loaded live from the Supabase "products" table) ──
+// discount / super_discount are the FINAL Rs. price for those modes
+// selling_price is the original tag price ("Original" price mode)
+interface Product {
+  id: string
+  name: string
+  sku: string | null
+  barcode: string | null
+  selling_price: number
+  discount: number
+  super_discount: number
+  stock: number
+  image_url: string | null
+  main_category: string | null
+}
+
+const PRODUCTS = ref<Product[]>([])
+const loadingProducts = ref(false)
+const loadError = ref('')
+
+async function fetchProducts() {
+  loadingProducts.value = true
+  loadError.value = ''
+  const { data, error } = await supabase
+    .from('products')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) {
+    loadError.value = error.message
+  } else {
+    PRODUCTS.value = data ?? []
+  }
+  loadingProducts.value = false
+}
+
+// discount / super_discount in Supabase are the FINAL Rs. price for that mode
+// (not a percentage and not a subtracted amount) — e.g. selling_price 1500, discount 1300
+// means "Discount" mode charges Rs. 1300 for the item.
+function priceForMode(product: Product, mode: string): number {
+  if (mode === 'original') return product.selling_price
+  if (mode === 'royal')    return product.super_discount ?? product.selling_price
+  return product.discount ?? product.selling_price // 'discount' (default)
+}
 
 // ── CART STATE ──
 const cart        = ref<any[]>([])
@@ -27,12 +63,34 @@ const amountPaid  = ref(0)
 const payMethod   = ref('Cash')
 const printReceipt = ref(true)
 const checkoutDone = ref(false)
+const checkingOut  = ref(false)
+const showPayLaterModal = ref(false)
+
+// When Later Pay is selected, turn off "Print with Receipt" automatically —
+// you can still toggle it on manually in the Pay Later modal itself.
+watch(payMethod, (method) => {
+  if (method === 'Later Pay') printReceipt.value = false
+})
 const toastMsg    = ref('')
 const toastVisible = ref(false)
 const searchQuery = ref('')
-const barcodeInput   = ref('')
-const barcodeSuccess = ref(false)
-const barcodeFail    = ref(false)
+const barcodeInput    = ref('')
+const barcodeInputEl  = ref<HTMLInputElement | null>(null)
+const barcodeSuccess  = ref(false)
+const barcodeFail     = ref(false)
+
+// Keep the barcode field focused by default so a physical scanner (which just
+// "types" fast + Enter) always lands here. Clicking an actual input/button
+// still works normally — clicking anywhere else on the page snaps focus back.
+function focusBarcodeInput() {
+  barcodeInputEl.value?.focus()
+}
+
+function refocusBarcodeUnlessInput(e: MouseEvent) {
+  const tag = (e.target as HTMLElement).tagName
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return
+  focusBarcodeInput()
+}
 const showDropdown = ref(false)
 const previewImg = ref('')
 const previewX   = ref(0)
@@ -52,9 +110,10 @@ function hideImgPreview() {
 // ── SEARCH RESULTS ──
 const searchResults = computed(() => {
   if (!searchQuery.value.trim()) return []
-  return PRODUCTS.filter(p =>
-    p.name.toLowerCase().includes(searchQuery.value.toLowerCase()) ||
-    p.sku.toLowerCase().includes(searchQuery.value.toLowerCase())
+  const q = searchQuery.value.toLowerCase()
+  return PRODUCTS.value.filter(p =>
+    p.name.toLowerCase().includes(q) ||
+    (p.sku || '').toLowerCase().includes(q)
   )
 })
 
@@ -84,33 +143,46 @@ function showToast(msg: string) {
 }
 
 // ── CART ACTIONS ──
-function addToCart(product: any) {
+// Stock is the ceiling — cart qty can never exceed what's actually in the products table
+function addToCart(product: Product) {
   const existing = cart.value.find(i => i.id === product.id)
   if (existing) {
+    if (existing.qty >= product.stock) {
+      showToast(`Only ${product.stock} in stock`)
+      return
+    }
     existing.qty++
   } else {
-    cart.value.push({ ...product, qty: 1, priceMode: 'discount', activePrice: product.discount })
+    if (product.stock <= 0) {
+      showToast(`${product.name} is out of stock`)
+      return
+    }
+    cart.value.push({ ...product, qty: 1, priceMode: 'discount', activePrice: priceForMode(product, 'discount') })
   }
   showToast(`${product.name} added`)
 }
 
-function setPriceMode(id: number, mode: string) {
+function setPriceMode(id: string, mode: string) {
   const item = cart.value.find(i => i.id === id)
   if (!item) return
   item.priceMode = mode
-  if (mode === 'discount')      item.activePrice = item.discount
-  else if (mode === 'royal')    item.activePrice = item.royalDiscount
-  else                          item.activePrice = item.price
+  item.activePrice = priceForMode(item, mode)
 }
 
-function updateQty(id: number, delta: number) {
+function updateQty(id: string, delta: number) {
   const item = cart.value.find(i => i.id === id)
   if (!item) return
+  const product = PRODUCTS.value.find(p => p.id === id)
+  const maxStock = product ? product.stock : item.stock
+  if (delta > 0 && item.qty >= maxStock) {
+    showToast(`Only ${maxStock} in stock`)
+    return
+  }
   item.qty = Math.max(0, item.qty + delta)
   if (item.qty === 0) cart.value = cart.value.filter(i => i.id !== id)
 }
 
-function removeItem(id: number) {
+function removeItem(id: string) {
   cart.value = cart.value.filter(i => i.id !== id)
 }
 
@@ -132,7 +204,7 @@ function flashBarcode(success: boolean) {
 function handleBarcode() {
   const val = barcodeInput.value.trim()
   if (!val) return
-  const product = PRODUCTS.find(p => p.barcode === val || p.sku.toLowerCase() === val.toLowerCase())
+  const product = PRODUCTS.value.find(p => p.barcode === val || (p.sku || '').toLowerCase() === val.toLowerCase())
   if (product) {
     addToCart(product)
     showToast(`${product.name} added`)
@@ -142,6 +214,7 @@ function handleBarcode() {
     flashBarcode(false)
   }
   barcodeInput.value = ''
+  focusBarcodeInput()
 }
 
 // ── SEARCH PICK ──
@@ -155,9 +228,112 @@ function hideDropdown() {
   setTimeout(() => { showDropdown.value = false }, 180)
 }
 
-// ── CHECKOUT ──
-function handleCheckout() {
+// "Cash" / "Card" / "Bank" / "Later Pay" (UI labels) → matches the
+// payment_method check constraint on the transactions table
+function paymentMethodCode(label: string): string {
+  return label.toLowerCase().replace(' ', '_')
+}
+
+// Human-readable label for which price mode was used on a line item
+function discountLabel(mode: string): string {
+  if (mode === 'royal') return 'Super'
+  if (mode === 'original') return 'Original'
+  return 'Discount'
+}
+
+// ── CHECKOUT INTERCEPT ──
+// For Later Pay: open the customer selection modal instead of checking out directly.
+// For all other payment methods: go straight through.
+function initiateCheckout() {
   if (!canCheckout.value) return
+  if (payMethod.value === 'Later Pay') {
+    showPayLaterModal.value = true
+  } else {
+    handleCheckout()
+  }
+}
+
+// Called when the Pay Later modal confirms a customer
+function onPayLaterConfirm(payload: { customerId: string; printBill: boolean }) {
+  showPayLaterModal.value = false
+  handleCheckout(payload.customerId, payload.printBill)
+}
+
+// ── CHECKOUT ──
+// Saves the sale to "transactions" + "transaction_items", then removes
+// the sold quantity from each product's stock in the "products" table.
+// customerId — only set for Later Pay orders (links to pay_later_customers table)
+// receiptOverride — Later Pay has its own "print bill" toggle in the modal
+async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
+  if (!canCheckout.value) return
+  checkingOut.value = true
+
+  try {
+    // 1. Create the transaction (the "receipt") row first — we need its
+    //    id before we can save the line items that belong to it.
+    const invoiceNo = `INV-${Date.now()}`
+    const { data: txn, error: txnError } = await supabase
+      .from('transactions')
+      .insert({
+        invoice_no: invoiceNo,
+        cashier_id: auth.user?.id ?? null,
+        customer_id: customerId ?? null,
+        subtotal: subtotal.value,
+        discount_percent: discount.value,
+        discount_amount: discountAmt.value,
+        total: total.value,
+        amount_paid: amountPaid.value,
+        balance: balance.value,
+        payment_method: paymentMethodCode(payMethod.value),
+        printed_receipt: receiptOverride ?? printReceipt.value,
+        status: 'completed',
+      })
+      .select()
+      .single()
+
+    if (txnError || !txn) {
+      showToast('Checkout failed: ' + (txnError?.message ?? 'unknown error'))
+      return
+    }
+
+    // 2. Save one row per cart item, linked to that transaction
+    const itemRows = cart.value.map(item => ({
+      transaction_id: txn.id,
+      product_id: item.id,
+      product_name: item.name,
+      sku: item.sku,
+      qty: item.qty,
+      unit_price: item.activePrice,
+      discount_label: discountLabel(item.priceMode),
+      line_total: item.activePrice * item.qty,
+    }))
+
+    const { error: itemsError } = await supabase.from('transaction_items').insert(itemRows)
+    if (itemsError) {
+      showToast('Checkout failed: ' + itemsError.message)
+      return
+    }
+
+    // 3. Reduce stock for every product sold
+    const updates = cart.value.map(item => {
+      const product = PRODUCTS.value.find(p => p.id === item.id)
+      const newStock = Math.max(0, (product ? product.stock : item.stock) - item.qty)
+      return supabase.from('products').update({ stock: newStock }).eq('id', item.id)
+        .then(({ error }) => {
+          if (!error && product) product.stock = newStock
+          return error
+        })
+    })
+    const results = await Promise.all(updates)
+    const failed = results.find(e => e)
+    if (failed) {
+      showToast('Stock update failed: ' + failed.message)
+      return
+    }
+  } finally {
+    checkingOut.value = false
+  }
+
   checkoutDone.value = true
   showToast('Order completed · ' + payMethod.value)
   setTimeout(() => {
@@ -169,6 +345,11 @@ function handleCheckout() {
   }, 2500)
 }
 
+// ── INIT ──
+onMounted(() => {
+  fetchProducts()
+  focusBarcodeInput()
+})
 </script>
 
 <template>
@@ -179,7 +360,7 @@ function handleCheckout() {
     <Slidebar v-model:isLight="isLight" />
 
     <!-- ── MAIN CASHIER ── -->
-    <main class="main">
+    <main class="main" @click="refocusBarcodeUnlessInput">
       <div class="main-header">
         <div class="main-title">Cashier</div>
         <div class="header-actions">
@@ -199,6 +380,7 @@ function handleCheckout() {
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="8" x2="7" y2="16"/><line x1="11" y1="8" x2="11" y2="16"/><line x1="15" y1="8" x2="15" y2="16"/><line x1="9" y1="8" x2="9" y2="16"/><line x1="13" y1="8" x2="13" y2="16"/></svg>
           </span>
           <input
+            ref="barcodeInputEl"
             v-model="barcodeInput"
             class="pos-input"
             placeholder="Scan barcode…"
@@ -226,13 +408,13 @@ function handleCheckout() {
               class="dropdown-item"
               @mousedown="pickFromSearch(p)"
             >
-              <img :src="p.image" class="dropdown-img" />
+              <img :src="p.image_url || ''" class="dropdown-img" />
               <div class="dropdown-info">
                 <div class="dropdown-name">{{ p.name }}</div>
-                <div class="dropdown-meta">{{ p.sku }} · {{ p.category }}</div>
+                <div class="dropdown-meta">{{ p.sku }} · {{ p.main_category }}</div>
               </div>
               <div class="dropdown-right">
-                <div class="dropdown-price">Rs. {{ p.price.toLocaleString() }}</div>
+                <div class="dropdown-price">Rs. {{ p.selling_price.toLocaleString() }}</div>
                 <div class="dropdown-stock" :class="{ 'low-stock': p.stock < 4 }">
                   {{ p.stock }} in stock
                 </div>
@@ -271,7 +453,7 @@ function handleCheckout() {
               @mouseenter="(e) => showImgPreview(e, item)"
               @mouseleave="hideImgPreview"
             >
-              <img :src="item.image" class="cart-img" />
+              <img :src="item.image_url || ''" class="cart-img" />
             </div>
             <div>
               <div class="cart-name">{{ item.name }}</div>
@@ -296,7 +478,7 @@ function handleCheckout() {
               </button>
             </div>
             <div class="cart-price-col">
-              <span v-if="item.priceMode !== 'original'" class="cart-original-crossed">{{ fmt(item.price * item.qty) }}</span>
+              <span v-if="item.priceMode !== 'original'" class="cart-original-crossed">{{ fmt(item.selling_price * item.qty) }}</span>
               <span class="cart-price">{{ fmt(item.activePrice * item.qty) }}</span>
             </div>
             <button class="remove-btn" @click="removeItem(item.id)">
@@ -373,11 +555,19 @@ function handleCheckout() {
             @click="payMethod = method"
           >{{ method }}</div>
         </div>
-        <div class="receipt-row" @click="printReceipt = !printReceipt">
-          <div class="checkbox" :class="{ checked: printReceipt }">
-            <svg v-if="printReceipt" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <!-- Disabled for Later Pay — receipt is controlled in the Pay Later modal -->
+        <div
+          class="receipt-row"
+          :class="{ 'receipt-disabled': payMethod === 'Later Pay' }"
+          @click="payMethod !== 'Later Pay' && (printReceipt = !printReceipt)"
+        >
+          <div class="checkbox" :class="{ checked: printReceipt && payMethod !== 'Later Pay' }">
+            <svg v-if="printReceipt && payMethod !== 'Later Pay'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           </div>
-          <span class="receipt-label">Print with Receipt</span>
+          <span class="receipt-label">
+            Print with Receipt
+            <span v-if="payMethod === 'Later Pay'" class="receipt-note">(set in Pay Later modal)</span>
+          </span>
         </div>
       </div>
 
@@ -385,11 +575,12 @@ function handleCheckout() {
         <button
           class="checkout-btn"
           :class="{ ready: canCheckout, done: checkoutDone }"
-          @click="handleCheckout"
+          :disabled="checkingOut"
+          @click="initiateCheckout"
         >
           <svg v-if="!checkoutDone" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          {{ checkoutDone ? 'Order Placed!' : 'Checkout' }}
+          {{ checkoutDone ? 'Order Placed!' : checkingOut ? 'Processing…' : 'Checkout' }}
         </button>
       </div>
 
@@ -397,6 +588,14 @@ function handleCheckout() {
         <span class="cart-branding-text">Powered by Xearch AI</span>
       </div>
     </aside>
+
+    <!-- ── PAY LATER MODAL ── -->
+    <PayLaterModal
+      v-model="showPayLaterModal"
+      :isLight="isLight"
+      :orderTotal="total"
+      @confirm="onPayLaterConfirm"
+    />
 
     <!-- ── TOAST ── -->
     <div class="toast" :class="{ show: toastVisible }">{{ toastMsg }}</div>
@@ -1041,6 +1240,8 @@ function handleCheckout() {
 .checkbox.checked svg { color: var(--accent-text); }
 
 .receipt-label { font-size: 12.5px; color: var(--text-sub); }
+.receipt-note  { font-size: 10.5px; color: var(--text-muted); margin-left: 4px; }
+.receipt-disabled { opacity: 0.4; cursor: not-allowed; }
 
 .checkout-area { padding: 20px 28px; flex-shrink: 0; }
 
