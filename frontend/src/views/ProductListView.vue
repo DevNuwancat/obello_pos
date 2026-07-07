@@ -15,6 +15,7 @@ import { useRouter } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
 import AddClothModal from '../components/modals/AddClothModal.vue'
 import EditProductModal from '../components/modals/EditProductModal.vue'
+import ImportProductsModal from '../components/modals/ImportProductsModal.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
 import { useBarcodePrintStore } from '../store/barcodePrint'
@@ -54,6 +55,13 @@ interface Category {
   name: string
   code: string
   type: string
+}
+
+// Shape of a supplier / owner row (for filter dropdowns)
+interface NamedCode {
+  id: string
+  name: string
+  code: string
 }
 
 
@@ -129,16 +137,52 @@ async function fetchSupplierCount() {
 
 
 // ──────────────────────────────────────────────
+// 6b. SUPPLIERS & OWNERS from Supabase (for filter dropdowns)
+// ──────────────────────────────────────────────
+const allSuppliers = ref<NamedCode[]>([])
+const allOwners     = ref<NamedCode[]>([])
+
+async function fetchSuppliers() {
+  const { data } = await supabase.from('suppliers').select('id, name, code').order('name')
+  allSuppliers.value = data ?? []
+}
+
+async function fetchOwners() {
+  const { data } = await supabase.from('owners').select('id, name, code').eq('is_active', true).order('name')
+  allOwners.value = data ?? []
+}
+
+
+// ──────────────────────────────────────────────
 // 7. FILTER & SEARCH STATE
 // ──────────────────────────────────────────────
 const mainCategoryFilter = ref('')   // e.g. "Clothing & Accessories" or '' for all
 const subCategoryFilter  = ref('')   // e.g. "T Shirt" (only visible when main = Clothing)
 const searchQuery        = ref('')   // search by name, SKU, or barcode
+const supplierFilter     = ref('')   // supplier id, or '' for all
+const ownerFilter        = ref('')   // owner name, or '' for all
+const stockStatusFilter  = ref<'all' | 'in_stock' | 'low_stock'>('all')
 
 // Show sub-category dropdown only when main type = "Clothing & Accessories"
 const showSubCategoryFilter = computed(() =>
   mainCategoryFilter.value === 'Clothing & Accessories'
 )
+
+// Any filter (besides the default "all") currently active
+const hasActiveFilters = computed(() =>
+  !!mainCategoryFilter.value || !!subCategoryFilter.value || !!searchQuery.value ||
+  !!supplierFilter.value || !!ownerFilter.value || stockStatusFilter.value !== 'all'
+)
+
+function clearFilters() {
+  mainCategoryFilter.value = ''
+  subCategoryFilter.value  = ''
+  searchQuery.value        = ''
+  supplierFilter.value     = ''
+  ownerFilter.value        = ''
+  stockStatusFilter.value  = 'all'
+  applyFilter()
+}
 
 
 // ──────────────────────────────────────────────
@@ -198,6 +242,10 @@ const filtered = computed(() => {
       const matchBarcode = (p.barcode || '').toLowerCase().includes(q)
       if (!matchName && !matchSku && !matchBarcode) return false
     }
+    if (supplierFilter.value && p.supplier_id !== supplierFilter.value) return false
+    if (ownerFilter.value && p.owner !== ownerFilter.value) return false
+    if (stockStatusFilter.value === 'in_stock' && p.stock <= 1) return false
+    if (stockStatusFilter.value === 'low_stock' && p.stock > 1) return false
     return true
   })
 
@@ -285,7 +333,7 @@ function goToPage(page: number) {
 // 11b. REFRESH — reload everything from database
 // ──────────────────────────────────────────────
 async function refreshData() {
-  await Promise.all([fetchProducts(), fetchCategories(), fetchSupplierCount()])
+  await Promise.all([fetchProducts(), fetchCategories(), fetchSupplierCount(), fetchSuppliers(), fetchOwners()])
   showToastMsg('Data refreshed')
 }
 
@@ -304,6 +352,16 @@ function openAddModal() {
 function onAddModalClose(val: boolean) {
   showAddModal.value = val
   if (!val) fetchProducts()
+}
+
+
+// ──────────────────────────────────────────────
+// 12b. IMPORT PRODUCTS FROM CSV
+// ──────────────────────────────────────────────
+const showImportModal = ref(false)
+
+function onImported() {
+  fetchProducts()
 }
 
 
@@ -414,6 +472,8 @@ onMounted(() => {
   fetchProducts()
   fetchCategories()
   fetchSupplierCount()
+  fetchSuppliers()
+  fetchOwners()
 })
 </script>
 
@@ -466,41 +526,73 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- ── TOOLBAR (filter + search + buttons) ── -->
+      <!-- ── TOOLBAR (filter row + action row, kept apart for readability) ── -->
       <div class="toolbar">
-        <!-- Main Category dropdown -->
-        <div class="select-wrap">
-          <select v-model="mainCategoryFilter" @change="onMainCategoryChange">
-            <option value="">All Categories</option>
-            <option v-for="t in categoryTypes" :key="t" :value="t">{{ t }}</option>
-          </select>
+
+        <!-- ROW 1: filters -->
+        <div class="toolbar-row toolbar-filters">
+          <!-- Main Category dropdown -->
+          <div class="select-wrap">
+            <select v-model="mainCategoryFilter" @change="onMainCategoryChange">
+              <option value="">All Categories</option>
+              <option v-for="t in categoryTypes" :key="t" :value="t">{{ t }}</option>
+            </select>
+          </div>
+
+          <!-- Sub-category dropdown — only shows when "Clothing & Accessories" is selected -->
+          <div v-if="showSubCategoryFilter" class="select-wrap">
+            <select v-model="subCategoryFilter" @change="applyFilter">
+              <option value="">All Sub-categories</option>
+              <option
+                v-for="c in subCategoriesForFilter"
+                :key="c.id"
+                :value="c.name"
+              >{{ c.name }}</option>
+            </select>
+          </div>
+
+          <!-- Search box (searches name, SKU, AND barcode) -->
+          <div class="search-box">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="Search name, SKU, or barcode…"
+              @input="applyFilter"
+            />
+          </div>
+
+          <!-- Supplier filter -->
+          <div class="select-wrap">
+            <select v-model="supplierFilter" @change="applyFilter">
+              <option value="">All Suppliers</option>
+              <option v-for="s in allSuppliers" :key="s.id" :value="s.id">{{ s.name }}</option>
+            </select>
+          </div>
+
+          <!-- Owner filter -->
+          <div class="select-wrap">
+            <select v-model="ownerFilter" @change="applyFilter">
+              <option value="">All Owners</option>
+              <option v-for="o in allOwners" :key="o.id" :value="o.name">{{ o.name }}</option>
+            </select>
+          </div>
+
+          <!-- Stock status filter -->
+          <div class="select-wrap">
+            <select v-model="stockStatusFilter" @change="applyFilter">
+              <option value="all">All Stock</option>
+              <option value="in_stock">In Stock</option>
+              <option value="low_stock">Low Stock</option>
+            </select>
+          </div>
+
+          <!-- Clear filters -->
+          <button v-if="hasActiveFilters" class="btn-clear-filters" @click="clearFilters">Clear filters</button>
         </div>
 
-        <!-- Sub-category dropdown — only shows when "Clothing & Accessories" is selected -->
-        <div v-if="showSubCategoryFilter" class="select-wrap">
-          <select v-model="subCategoryFilter" @change="applyFilter">
-            <option value="">All Sub-categories</option>
-            <option
-              v-for="c in subCategoriesForFilter"
-              :key="c.id"
-              :value="c.name"
-            >{{ c.name }}</option>
-          </select>
-        </div>
-
-        <!-- Search box (searches name, SKU, AND barcode) -->
-        <div class="search-box">
-          <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
-          <input
-            v-model="searchQuery"
-            type="text"
-            placeholder="Search name, SKU, or barcode…"
-            @input="applyFilter"
-          />
-        </div>
-
-        <!-- Right-side buttons -->
-        <div class="toolbar-right">
+        <!-- ROW 2: actions -->
+        <div class="toolbar-row toolbar-actions">
           <!-- Refresh button — reloads data from Supabase -->
           <button class="btn btn-outline" @click="refreshData" title="Refresh data">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-6.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -509,6 +601,10 @@ onMounted(() => {
           <button class="btn btn-outline" @click="exportCSV">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
             Export
+          </button>
+          <button class="btn btn-outline" @click="showImportModal = true">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l4-4m0 0l4 4m-4-4v12"/></svg>
+            Import CSV
           </button>
           <!-- Goes to the Barcode Print page — badge shows how many products are queued -->
           <button class="btn btn-outline" @click="router.push('/barcode-print')" title="Go to barcode print queue">
@@ -674,6 +770,16 @@ onMounted(() => {
     />
 
     <!-- ══════════════════════════════════════ -->
+    <!--    IMPORT PRODUCTS FROM CSV           -->
+    <!-- ══════════════════════════════════════ -->
+    <ImportProductsModal
+      v-model="showImportModal"
+      :isLight="isLight"
+      :suppliers="allSuppliers"
+      @imported="onImported"
+    />
+
+    <!-- ══════════════════════════════════════ -->
     <!--    EDIT PRODUCT MODAL                 -->
     <!-- ══════════════════════════════════════ -->
     <EditProductModal
@@ -800,9 +906,16 @@ onMounted(() => {
    ══════════════════════════════════ */
 .toolbar {
   padding: 20px 32px 0;
-  display: flex; align-items: center;
-  gap: 12px; flex-wrap: wrap;
+  display: flex; flex-direction: column;
+  gap: 10px;
 }
+
+.toolbar-row {
+  display: flex; align-items: center;
+  gap: 10px; flex-wrap: wrap;
+}
+
+.toolbar-actions { justify-content: flex-end; }
 
 .select-wrap { position: relative; }
 .select-wrap select {
@@ -836,7 +949,7 @@ onMounted(() => {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px;
-  flex: 1; max-width: 300px;
+  flex: 1; min-width: 200px;
 }
 .search-box svg { width: 15px; height: 15px; color: var(--text-sub); flex-shrink: 0; }
 .search-box input {
@@ -860,7 +973,14 @@ onMounted(() => {
 .btn-primary:hover { opacity: .85; }
 .btn-outline { background: var(--surface); border-color: var(--border); color: var(--text); }
 .btn-outline:hover { background: var(--surface2); }
-.toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+
+.btn-clear-filters {
+  padding: 8px 14px; border-radius: 8px;
+  border: 1px dashed var(--border); background: transparent;
+  color: var(--text-sub); font-size: 12.5px; font-family: 'DM Sans', sans-serif;
+  cursor: pointer; transition: color .15s, border-color .15s;
+}
+.btn-clear-filters:hover { color: var(--red); border-color: var(--red); }
 
 .queue-count {
   display: inline-flex; align-items: center; justify-content: center;

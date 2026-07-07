@@ -28,6 +28,7 @@ const navItems = computed(() => {
     { key: 'today-business', label: 'Today Business', path: '/today-business' },
     { key: 'owner-earnings', label: 'Owner Earnings', path: '/owner-earnings' },
     { key: 'pay-later',      label: 'Pay Later List', path: '/pay-later' },
+    { key: 'return-bin',     label: 'Return Bin',    path: '/return-bin' },
   ]
   if (auth.isAdmin) items.push({ key: 'users', label: 'Users', path: '/users' })
   return items
@@ -96,6 +97,8 @@ async function handleLogout() {
         <svg v-else-if="item.key === 'owner-earnings'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
         <!-- Pay Later card icon -->
         <svg v-else-if="item.key === 'pay-later'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        <!-- Return Bin icon (curved back arrow) -->
+        <svg v-else-if="item.key === 'return-bin'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
         <!-- Users icon -->
         <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
         {{ item.label }}
