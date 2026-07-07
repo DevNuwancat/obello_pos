@@ -2,3 +2,12 @@
   base = "frontend"
   command = "npm run build"
   publish = "dist"
+
+# Vue Router uses real URL paths (history mode), but Netlify has no actual
+# file at e.g. /add-new — it only exists client-side. Without this, direct
+# navigation or a page refresh on any route other than "/" 404s. This sends
+# every request to index.html instead, so Vue Router can take over.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
