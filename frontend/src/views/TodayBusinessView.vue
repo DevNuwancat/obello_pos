@@ -11,7 +11,7 @@
 // ──────────────────────────────────────────────
 // 1. IMPORTS
 // ──────────────────────────────────────────────
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
@@ -64,29 +64,56 @@ const isLight = ref(localStorage.getItem('theme') === 'light')
 
 
 // ──────────────────────────────────────────────
-// 4. TODAY'S TRANSACTIONS from Supabase
+// 3b. DATE SELECTION
+//     Reports can be viewed for any day in the last 4 months (matches the
+//     retention window — older data is auto-deleted, so there's nothing
+//     to show before that anyway).
+// ──────────────────────────────────────────────
+function toDateStr(d: Date): string {
+  const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const todayStr = toDateStr(new Date())
+const selectedDate = ref(todayStr)
+const isViewingToday = computed(() => selectedDate.value === todayStr)
+
+const minSelectableDate = (() => {
+  const d = new Date()
+  d.setMonth(d.getMonth() - 4)
+  return toDateStr(d)
+})()
+const maxSelectableDate = todayStr
+
+const selectedDateLabel = computed(() => {
+  const d = new Date(selectedDate.value + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
+})
+
+
+// ──────────────────────────────────────────────
+// 4. TRANSACTIONS from Supabase, for whichever date is selected
 // ──────────────────────────────────────────────
 const transactions = ref<Transaction[]>([])
 const itemRows      = ref<TransactionItemRow[]>([])
 const loading       = ref(false)
 const fetchError    = ref('')
 
-// Midnight today → midnight tomorrow, in this device's local time
-function todayRange() {
-  const start = new Date()
-  start.setHours(0, 0, 0, 0)
-  const end = new Date()
-  end.setHours(23, 59, 59, 999)
+// Midnight → midnight tomorrow for a given "YYYY-MM-DD" date, in local time
+function dayRange(dateStr: string) {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const start = new Date(y, m - 1, d, 0, 0, 0, 0)
+  const end   = new Date(y, m - 1, d, 23, 59, 59, 999)
   return { start: start.toISOString(), end: end.toISOString() }
 }
 
-async function fetchTodayData() {
+async function fetchReportData() {
   loading.value    = true
   fetchError.value = ''
   try {
-    const { start, end } = todayRange()
+    const { start, end } = dayRange(selectedDate.value)
 
-    // All of today's transactions, newest first, with the cashier's name joined in.
+    // All of the selected day's transactions, newest first, with the cashier's name joined in.
     // Voided bills are cancelled sales, so they're left out entirely — they
     // never count toward totals and never appear in the table.
     const { data: txnData, error: txnError } = await supabase
@@ -100,7 +127,7 @@ async function fetchTodayData() {
     if (txnError) { fetchError.value = txnError.message; return }
     transactions.value = txnData ?? []
 
-    // Every item sold today, with its product image + cost price joined in.
+    // Every item sold that day, with its product image + cost price joined in.
     // Used for: the cost/profit calc, the "Items" count column, and the
     // expanded item list under each row.
     const ids = transactions.value.map(t => t.id)
@@ -115,10 +142,104 @@ async function fetchTodayData() {
       itemRows.value = []
     }
   } catch {
-    fetchError.value = 'Could not load today\'s business data.'
+    fetchError.value = 'Could not load business data for this day.'
   } finally {
     loading.value = false
   }
+}
+
+// Reload the report whenever the selected date changes
+watch(selectedDate, fetchReportData)
+
+
+// ──────────────────────────────────────────────
+// 4b. AVAILABLE DATES — which days in the last 4 months have any sales,
+//     so the calendar can grey out empty days instead of showing a blank
+//     report for them.
+// ──────────────────────────────────────────────
+const availableDates = ref<Set<string>>(new Set())
+
+async function fetchAvailableDates() {
+  const fourMonthsAgo = new Date()
+  fourMonthsAgo.setMonth(fourMonthsAgo.getMonth() - 4)
+
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('created_at')
+    .gte('created_at', fourMonthsAgo.toISOString())
+    .neq('status', 'void')
+
+  if (error) { console.error('Available dates fetch error:', error); return }
+
+  const set = new Set<string>()
+  for (const row of data ?? []) set.add(toDateStr(new Date(row.created_at)))
+  availableDates.value = set
+}
+
+
+// ──────────────────────────────────────────────
+// 4c. CALENDAR DROPDOWN — pick any day with data, within the retention window
+// ──────────────────────────────────────────────
+const showCalendar    = ref(false)
+const calendarView    = ref(new Date(selectedDate.value + 'T00:00:00')) // which month is showing
+
+function openCalendar() {
+  calendarView.value = new Date(selectedDate.value + 'T00:00:00')
+  showCalendar.value = true
+}
+function closeCalendar() {
+  showCalendar.value = false
+}
+
+const calendarMonthLabel = computed(() =>
+  calendarView.value.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+)
+
+interface CalendarCell { dateStr: string | null; day: number | null; hasData: boolean; inRange: boolean }
+
+const calendarCells = computed<CalendarCell[]>(() => {
+  const year  = calendarView.value.getFullYear()
+  const month = calendarView.value.getMonth()
+  const firstWeekday = new Date(year, month, 1).getDay()   // 0 = Sunday
+  const daysInMonth  = new Date(year, month + 1, 0).getDate()
+
+  const cells: CalendarCell[] = []
+  for (let i = 0; i < firstWeekday; i++) cells.push({ dateStr: null, day: null, hasData: false, inRange: false })
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = toDateStr(new Date(year, month, day))
+    cells.push({
+      dateStr,
+      day,
+      hasData: availableDates.value.has(dateStr),
+      inRange: dateStr >= minSelectableDate && dateStr <= maxSelectableDate,
+    })
+  }
+  return cells
+})
+
+// Don't let the user navigate outside the 4-month retention window
+const canGoPrevMonth = computed(() => {
+  const prev = new Date(calendarView.value.getFullYear(), calendarView.value.getMonth() - 1, 1)
+  const floor = new Date(minSelectableDate + 'T00:00:00')
+  return prev >= new Date(floor.getFullYear(), floor.getMonth(), 1)
+})
+const canGoNextMonth = computed(() => {
+  const next = new Date(calendarView.value.getFullYear(), calendarView.value.getMonth() + 1, 1)
+  const ceiling = new Date(maxSelectableDate + 'T00:00:00')
+  return next <= new Date(ceiling.getFullYear(), ceiling.getMonth(), 1)
+})
+
+function prevMonth() {
+  if (canGoPrevMonth.value) calendarView.value = new Date(calendarView.value.getFullYear(), calendarView.value.getMonth() - 1, 1)
+}
+function nextMonth() {
+  if (canGoNextMonth.value) calendarView.value = new Date(calendarView.value.getFullYear(), calendarView.value.getMonth() + 1, 1)
+}
+
+function pickDate(cell: CalendarCell) {
+  if (!cell.dateStr || !cell.hasData || !cell.inRange) return
+  selectedDate.value = cell.dateStr
+  showCalendar.value = false
 }
 
 
@@ -235,8 +356,6 @@ function fmtTime(dateStr: string): string {
   return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
 }
 
-const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
-
 function paymentLabel(method: string): string {
   if (method === 'later_pay') return 'Later Pay'
   return method.charAt(0).toUpperCase() + method.slice(1)
@@ -244,10 +363,12 @@ function paymentLabel(method: string): string {
 
 
 // ──────────────────────────────────────────────
-// 9. REFRESH — full page reload, so this always starts from a clean slate
+// 9. REFRESH — re-fetch the currently selected day (and the available-dates
+//    list), without losing which date the user is looking at
 // ──────────────────────────────────────────────
 function refreshData() {
-  window.location.reload()
+  fetchReportData()
+  fetchAvailableDates()
 }
 
 
@@ -259,9 +380,9 @@ function refreshData() {
 function exportCSV() {
   const summary = [
     ['Today Business Report'],
-    [todayLabel],
+    [selectedDateLabel.value],
     [],
-    ["Today's Sales", fmtRs(todaysSalesTotal.value)],
+    ['Sales', fmtRs(todaysSalesTotal.value)],
     ['Cost of Goods', fmtRs(todaysCostTotal.value)],
     ['Profit', fmtRs(todaysProfit.value)],
     ['Sales Count', String(todaysSalesCount.value)],
@@ -312,7 +433,7 @@ function exportCSV() {
 
   const a = Object.assign(document.createElement('a'), {
     href: 'data:text/csv,' + encodeURIComponent(csv),
-    download: `today-business-${new Date().toISOString().slice(0, 10)}.csv`,
+    download: `today-business-${selectedDate.value}.csv`,
   })
   a.click()
   showToastMsg('CSV exported')
@@ -344,7 +465,7 @@ function exportPDF() {
   doc.setTextColor(80, 80, 78)
   doc.text('Today Business Report', pageWidth - margin, y - 6, { align: 'right' })
   doc.setFontSize(9.5)
-  doc.text(todayLabel, pageWidth - margin, y + 8, { align: 'right' })
+  doc.text(selectedDateLabel.value, pageWidth - margin, y + 8, { align: 'right' })
 
   y += 20
   doc.setDrawColor(230, 228, 224)
@@ -353,7 +474,7 @@ function exportPDF() {
 
   // ── SUMMARY CARDS (as a clean key/value grid) ──
   const summaryPairs: [string, string][] = [
-    ["Today's Sales", fmtRs(todaysSalesTotal.value)],
+    ['Sales', fmtRs(todaysSalesTotal.value)],
     ['Cost of Goods', fmtRs(todaysCostTotal.value)],
     ['Profit', fmtRs(todaysProfit.value)],
     ['Sales Count', String(todaysSalesCount.value)],
@@ -455,7 +576,7 @@ function exportPDF() {
     doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 24, { align: 'right' })
   }
 
-  doc.save(`today-business-${new Date().toISOString().slice(0, 10)}.pdf`)
+  doc.save(`today-business-${selectedDate.value}.pdf`)
   showToastMsg('PDF exported')
 }
 
@@ -476,7 +597,10 @@ function showToastMsg(msg: string) {
 // ──────────────────────────────────────────────
 // 11. INIT
 // ──────────────────────────────────────────────
-onMounted(fetchTodayData)
+onMounted(() => {
+  fetchReportData()
+  fetchAvailableDates()
+})
 </script>
 
 
@@ -496,15 +620,68 @@ onMounted(fetchTodayData)
 
       <!-- ── PAGE HEADER ── -->
       <div class="page-header">
-        <h1 class="page-title">Today Business</h1>
-        <p class="page-sub">{{ todayLabel }} · live snapshot of today's sales</p>
+        <div class="page-header-top">
+          <div>
+            <h1 class="page-title">{{ isViewingToday ? 'Today Business' : 'Business Report' }}</h1>
+            <p class="page-sub">{{ isViewingToday ? 'Live snapshot of today\'s sales' : 'Archived snapshot' }}</p>
+          </div>
+
+          <!-- ── DATE PICKER ── -->
+          <div class="date-picker">
+            <button class="date-picker-btn" @click="showCalendar ? closeCalendar() : openCalendar()">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              <span>{{ selectedDateLabel }}</span>
+              <svg class="date-picker-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+
+            <!-- Backdrop closes the dropdown on outside click -->
+            <div v-if="showCalendar" class="calendar-backdrop" @click="closeCalendar"></div>
+
+            <div v-if="showCalendar" class="calendar-pop">
+              <div class="calendar-nav">
+                <button class="calendar-nav-btn" :disabled="!canGoPrevMonth" @click="prevMonth">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <span class="calendar-month-label">{{ calendarMonthLabel }}</span>
+                <button class="calendar-nav-btn" :disabled="!canGoNextMonth" @click="nextMonth">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
+
+              <div class="calendar-weekdays">
+                <span v-for="d in ['S','M','T','W','T','F','S']" :key="d">{{ d }}</span>
+              </div>
+
+              <div class="calendar-grid">
+                <button
+                  v-for="(cell, idx) in calendarCells"
+                  :key="idx"
+                  class="calendar-cell"
+                  :class="{
+                    empty: !cell.day,
+                    disabled: cell.day && (!cell.hasData || !cell.inRange),
+                    selected: cell.dateStr === selectedDate,
+                    today: cell.dateStr === todayStr,
+                  }"
+                  :disabled="!cell.day || !cell.hasData || !cell.inRange"
+                  @click="pickDate(cell)"
+                >{{ cell.day || '' }}</button>
+              </div>
+
+              <div class="calendar-legend">
+                <span class="legend-dot has-data"></span> Has sales data
+                <span class="legend-dot no-data"></span> No data
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ── STATS BAR (4 summary cards, Later Pay kept separate) ── -->
       <div class="stats-bar">
-        <!-- Today's Sales -->
+        <!-- Sales -->
         <div class="stat-card">
-          <div class="stat-label">Today's Sales</div>
+          <div class="stat-label">Sales</div>
           <div class="stat-value">{{ fmtRs(todaysSalesTotal) }}</div>
           <div class="stat-sub">cash, card &amp; bank only</div>
         </div>
@@ -757,8 +934,77 @@ onMounted(fetchTodayData)
 }
 
 .page-header { padding: 32px 32px 0; }
+.page-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .page-title  { font-size: 26px; font-weight: 600; letter-spacing: -.02em; color: var(--text); }
 .page-sub    { font-size: 13px; color: var(--text-sub); margin-top: 2px; }
+
+
+/* ══════════════════════════════════
+   DATE PICKER
+   ══════════════════════════════════ */
+.date-picker { position: relative; }
+
+.date-picker-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: 9px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text); font-family: 'DM Sans', sans-serif;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.date-picker-btn:hover { background: var(--surface2); }
+.date-picker-btn svg { flex-shrink: 0; color: var(--text-sub); }
+.date-picker-chevron { margin-left: 2px; }
+
+.calendar-backdrop { position: fixed; inset: 0; z-index: 40; }
+
+.calendar-pop {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 41;
+  width: 280px; padding: 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  animation: popIn .15s ease both;
+}
+@keyframes popIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+.calendar-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.calendar-month-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.calendar-nav-btn {
+  width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text); cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.calendar-nav-btn:hover:not(:disabled) { background: var(--surface2); }
+.calendar-nav-btn:disabled { opacity: .3; cursor: not-allowed; }
+
+.calendar-weekdays {
+  display: grid; grid-template-columns: repeat(7, 1fr);
+  font-size: 10.5px; color: var(--text-muted); text-align: center;
+  margin-bottom: 4px;
+}
+
+.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+
+.calendar-cell {
+  aspect-ratio: 1; border-radius: 7px; border: none; background: transparent;
+  font-size: 12px; font-family: 'DM Mono', monospace; color: var(--text);
+  cursor: pointer; transition: background .12s, color .12s;
+}
+.calendar-cell:hover:not(.disabled):not(.empty) { background: var(--surface2); }
+.calendar-cell.empty { cursor: default; }
+.calendar-cell.disabled { color: var(--text-muted); opacity: .35; cursor: not-allowed; }
+.calendar-cell.today:not(.selected) { border: 1px solid var(--text-sub); }
+.calendar-cell.selected { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
+
+.calendar-legend {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--text-muted);
+}
+.legend-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.legend-dot.has-data { background: var(--text); }
+.legend-dot.no-data { background: var(--text-muted); margin-left: 10px; }
 
 
 /* ══════════════════════════════════

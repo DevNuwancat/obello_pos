@@ -16,6 +16,8 @@ import { ref, computed, onMounted } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 
 // ──────────────────────────────────────────────
@@ -338,6 +340,33 @@ async function submitNewCustomer() {
 
 
 // ──────────────────────────────────────────────
+// 10b. DELETE CUSTOMER — for settled accounts, once paid off in person
+// ──────────────────────────────────────────────
+const deletingCustomerId = ref<string | null>(null)
+
+async function deleteCustomer(c: CustomerBalance) {
+  if (!confirm(`Delete ${c.name}'s Pay Later account? This can't be undone.`)) return
+
+  deletingCustomerId.value = c.id
+  const { error } = await supabase.from('pay_later_customers').delete().eq('id', c.id)
+  deletingCustomerId.value = null
+
+  if (error) {
+    // 23503 = foreign key violation — their bills/payments still reference this customer
+    if (error.code === '23503') {
+      showToastMsg('Could not delete — this account still has bill or payment history')
+    } else {
+      showToastMsg('Delete failed: ' + error.message)
+    }
+    return
+  }
+
+  customers.value = customers.value.filter(x => x.id !== c.id)
+  showToastMsg(`${c.name} removed`)
+}
+
+
+// ──────────────────────────────────────────────
 // 11. HELPERS
 // ──────────────────────────────────────────────
 function fmtRs(n: number): string {
@@ -377,8 +406,138 @@ function exportCSV() {
   showToastMsg('CSV exported')
 }
 
+// ──────────────────────────────────────────────
+// 12b. EXPORT PDF
+// Builds a real A4 PDF file straight in the browser and downloads it —
+// same look and structure as Today Business Report's PDF export.
+// ──────────────────────────────────────────────
 function exportPDF() {
-  window.print()
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const margin = 40
+  let y = 50
+
+  const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
+
+  // ── HEADER ──
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(20)
+  doc.setTextColor(20, 20, 18)
+  doc.text('obello', margin, y)
+  doc.setFontSize(10)
+  doc.setTextColor(120, 120, 115)
+  doc.setFont('helvetica', 'normal')
+  doc.text('POS V2.0', margin + 62, y)
+
+  doc.setFontSize(11)
+  doc.setTextColor(80, 80, 78)
+  doc.text('Pay Later Report', pageWidth - margin, y - 6, { align: 'right' })
+  doc.setFontSize(9.5)
+  doc.text(todayLabel, pageWidth - margin, y + 8, { align: 'right' })
+
+  y += 20
+  doc.setDrawColor(230, 228, 224)
+  doc.line(margin, y, pageWidth - margin, y)
+  y += 26
+
+  // ── SUMMARY CARDS (key/value grid) ──
+  const summaryPairs: [string, string][] = [
+    ['Total Owed', fmtRs(totalOwed.value)],
+    ['Total Collected', fmtRs(totalCollected.value)],
+    ['Pending Accounts', String(pendingAccounts.value)],
+    ['Paid Accounts', String(paidAccounts.value)],
+  ]
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'plain',
+    body: summaryPairs,
+    styles: { font: 'helvetica', fontSize: 10, cellPadding: 6 },
+    columnStyles: {
+      0: { textColor: [110, 108, 104], cellWidth: 140 },
+      1: { textColor: [20, 20, 18], fontStyle: 'bold' },
+    },
+    didParseCell: (data) => {
+      if (data.row.index % 2 === 0) data.cell.styles.fillColor = [247, 245, 242]
+    },
+  })
+  y = (doc as any).lastAutoTable.finalY + 26
+
+  // ── CUSTOMER ACCOUNTS TABLE (respects the current tab + search + sort) ──
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(12)
+  doc.setTextColor(20, 20, 18)
+  doc.text(activeTab.value === 'pending' ? 'Pending Accounts' : 'Paid Accounts', margin, y)
+  y += 10
+
+  const custHead = [['Customer', 'Phone', 'Total Billed', 'Total Paid', 'Balance', 'Last Activity']]
+  const custBody = filteredCustomers.value.map(c => [
+    c.name,
+    c.phone || '—',
+    c.total_billed.toFixed(2),
+    c.total_paid.toFixed(2),
+    c.total_owed.toFixed(2),
+    fmtDate(lastActivity(c)),
+  ])
+  autoTable(doc, {
+    startY: y + 6,
+    margin: { left: margin, right: margin },
+    head: custHead,
+    body: custBody,
+    theme: 'striped',
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 6 },
+    headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+  })
+  y = (doc as any).lastAutoTable.finalY + 26
+
+  // ── BILLS BREAKDOWN (every Later Pay bill belonging to the listed customers) ──
+  const filteredIds = new Set(filteredCustomers.value.map(c => c.id))
+  const nameById = new Map(filteredCustomers.value.map(c => [c.id, c.name]))
+  const billBody = bills.value
+    .filter(b => filteredIds.has(b.customer_id))
+    .map(b => [
+      nameById.get(b.customer_id) || '—',
+      b.invoice_no,
+      fmtDate(b.created_at),
+      b.total.toFixed(2),
+    ])
+
+  if (billBody.length > 0) {
+    if (y > doc.internal.pageSize.getHeight() - 120) {
+      doc.addPage()
+      y = 50
+    }
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(12)
+    doc.setTextColor(20, 20, 18)
+    doc.text('Bills', margin, y)
+
+    autoTable(doc, {
+      startY: y + 10,
+      margin: { left: margin, right: margin },
+      head: [['Customer', 'Invoice No', 'Date', 'Total']],
+      body: billBody,
+      theme: 'striped',
+      styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 5 },
+      headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
+      columnStyles: { 3: { halign: 'right' } },
+    })
+  }
+
+  // ── FOOTER on every page ──
+  const pageCount = doc.getNumberOfPages()
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i)
+    const pageHeight = doc.internal.pageSize.getHeight()
+    doc.setFontSize(8)
+    doc.setTextColor(150, 148, 144)
+    doc.text(`Generated ${new Date().toLocaleString('en-US')}`, margin, pageHeight - 24)
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 24, { align: 'right' })
+  }
+
+  doc.save(`pay-later-${new Date().toISOString().slice(0, 10)}.pdf`)
+  showToastMsg('PDF exported')
 }
 
 
@@ -535,7 +694,17 @@ onMounted(fetchAll)
                       class="btn-pay"
                       @click="openPayModal(c)"
                     >Pay</button>
-                    <span v-else class="paid-tag">✓ Paid</span>
+                    <span v-else class="paid-actions">
+                      <span class="paid-tag">✓ Paid</span>
+                      <button
+                        class="btn-delete"
+                        :disabled="deletingCustomerId === c.id"
+                        title="Delete this account"
+                        @click="deleteCustomer(c)"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                      </button>
+                    </span>
                   </td>
                 </tr>
 
@@ -845,7 +1014,19 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   font-family: 'DM Sans', sans-serif; cursor: pointer; transition: opacity .15s;
 }
 .btn-pay:hover { opacity: .85; }
+
+.paid-actions { display: inline-flex; align-items: center; gap: 10px; }
 .paid-tag { font-size: 12px; color: var(--green); font-weight: 600; }
+
+.btn-delete {
+  width: 26px; height: 26px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--bg);
+  color: var(--text-muted); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.btn-delete:hover:not(:disabled) { color: var(--red); background: var(--red-bg); border-color: var(--red); }
+.btn-delete:disabled { opacity: .4; cursor: not-allowed; }
 
 /* ── Expandable row ── */
 .txn-row { cursor: pointer; }
