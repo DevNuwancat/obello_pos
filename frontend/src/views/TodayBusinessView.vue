@@ -15,6 +15,8 @@ import { ref, computed, onMounted } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import jsPDF from 'jspdf'
+import autoTable from 'jspdf-autotable'
 
 
 // ──────────────────────────────────────────────
@@ -164,10 +166,15 @@ const laterPayTotal = computed(() => laterPayTransactions.value.reduce((sum, t) 
 // ──────────────────────────────────────────────
 // 7. PAYMENT METHOD FILTER (for the table only)
 // ──────────────────────────────────────────────
-const paymentFilter = ref('') // '' = All, otherwise 'cash' | 'card' | 'bank' | 'later_pay'
+// 'all_no_later' / 'all_with_later' = the two "All Payments" modes, otherwise
+// a specific method: 'cash' | 'card' | 'bank' | 'later_pay'
+const paymentFilter = ref('all_no_later')
 
 const filteredTransactions = computed(() => {
-  if (!paymentFilter.value) return transactions.value
+  if (paymentFilter.value === 'all_no_later') {
+    return transactions.value.filter(t => t.payment_method !== 'later_pay')
+  }
+  if (paymentFilter.value === 'all_with_later') return transactions.value
   return transactions.value.filter(t => t.payment_method === paymentFilter.value)
 })
 
@@ -237,11 +244,10 @@ function paymentLabel(method: string): string {
 
 
 // ──────────────────────────────────────────────
-// 9. REFRESH
+// 9. REFRESH — full page reload, so this always starts from a clean slate
 // ──────────────────────────────────────────────
-async function refreshData() {
-  await fetchTodayData()
-  showToastMsg('Data refreshed')
+function refreshData() {
+  window.location.reload()
 }
 
 
@@ -279,7 +285,28 @@ function exportCSV() {
     t.total.toFixed(2),
   ])
 
-  const csv = [...summary, headers, ...rows]
+  // Item-by-item breakdown — every product sold today, one row each,
+  // tagged with which invoice it belongs to.
+  const itemSection = [
+    [],
+    ['Item-by-Item Breakdown'],
+    ['Invoice No', 'Product Name', 'SKU', 'Price Mode', 'Qty', 'Unit Price', 'Line Total'],
+  ]
+  const filteredIds = new Set(filteredTransactions.value.map(t => t.id))
+  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoice_no]))
+  const itemRowsOut = itemRows.value
+    .filter(row => filteredIds.has(row.transaction_id))
+    .map(row => [
+      invoiceByTxnId.get(row.transaction_id) || '—',
+      row.product_name,
+      row.sku || '—',
+      row.discount_label || '—',
+      String(row.qty),
+      row.unit_price.toFixed(2),
+      row.line_total.toFixed(2),
+    ])
+
+  const csv = [...summary, headers, ...rows, ...itemSection, ...itemRowsOut]
     .map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
     .join('\n')
 
@@ -294,12 +321,142 @@ function exportCSV() {
 
 // ──────────────────────────────────────────────
 // 9c. EXPORT PDF
-// Uses the browser's own print dialog ("Save as PDF") on the page itself —
-// the @media print rules in <style> hide the sidebar/toolbar so only the
-// report (cards + table) gets printed.
+// Builds a real A4 PDF file straight in the browser and downloads it —
+// no print dialog, no "Save as PDF" step. Uses jsPDF + autoTable.
 // ──────────────────────────────────────────────
 function exportPDF() {
-  window.print()
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' }) // A4, points as the unit
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const margin = 40
+  let y = 50
+
+  // ── HEADER ──
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(20)
+  doc.setTextColor(20, 20, 18)
+  doc.text('obello', margin, y)
+  doc.setFontSize(10)
+  doc.setTextColor(120, 120, 115)
+  doc.setFont('helvetica', 'normal')
+  doc.text('POS V2.0', margin + 62, y)
+
+  doc.setFontSize(11)
+  doc.setTextColor(80, 80, 78)
+  doc.text('Today Business Report', pageWidth - margin, y - 6, { align: 'right' })
+  doc.setFontSize(9.5)
+  doc.text(todayLabel, pageWidth - margin, y + 8, { align: 'right' })
+
+  y += 20
+  doc.setDrawColor(230, 228, 224)
+  doc.line(margin, y, pageWidth - margin, y)
+  y += 26
+
+  // ── SUMMARY CARDS (as a clean key/value grid) ──
+  const summaryPairs: [string, string][] = [
+    ["Today's Sales", fmtRs(todaysSalesTotal.value)],
+    ['Cost of Goods', fmtRs(todaysCostTotal.value)],
+    ['Profit', fmtRs(todaysProfit.value)],
+    ['Sales Count', String(todaysSalesCount.value)],
+    ['Later Pay Orders', String(laterPayCount.value)],
+    ['Later Pay Owed', fmtRs(laterPayTotal.value)],
+  ]
+  autoTable(doc, {
+    startY: y,
+    margin: { left: margin, right: margin },
+    theme: 'plain',
+    body: summaryPairs,
+    styles: { font: 'helvetica', fontSize: 10, cellPadding: 6 },
+    columnStyles: {
+      0: { textColor: [110, 108, 104], cellWidth: 140 },
+      1: { textColor: [20, 20, 18], fontStyle: 'bold' },
+    },
+    didParseCell: (data) => {
+      // Alternate light background per pair for readability
+      if (data.row.index % 2 === 0) data.cell.styles.fillColor = [247, 245, 242]
+    },
+  })
+  y = (doc as any).lastAutoTable.finalY + 26
+
+  // ── TRANSACTIONS TABLE ──
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(12)
+  doc.setTextColor(20, 20, 18)
+  doc.text('Transactions', margin, y)
+  y += 10
+
+  const txnHead = [['Time', 'Invoice No', 'Cashier', 'Payment', 'Status', 'Items', 'Total (Rs.)']]
+  const txnBody = filteredTransactions.value.map(t => [
+    fmtTime(t.created_at),
+    t.invoice_no,
+    t.users?.full_name || '—',
+    paymentLabel(t.payment_method),
+    t.status,
+    String(itemCountByTxn.value.get(t.id) ?? 0),
+    t.total.toFixed(2),
+  ])
+  autoTable(doc, {
+    startY: y + 6,
+    margin: { left: margin, right: margin },
+    head: txnHead,
+    body: txnBody,
+    theme: 'striped',
+    styles: { font: 'helvetica', fontSize: 9, cellPadding: 6 },
+    headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: { 6: { halign: 'right' } },
+  })
+  y = (doc as any).lastAutoTable.finalY + 26
+
+  // ── ITEM-BY-ITEM BREAKDOWN ──
+  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoice_no]))
+  const filteredIds = new Set(filteredTransactions.value.map(t => t.id))
+  const itemBody = itemRows.value
+    .filter(row => filteredIds.has(row.transaction_id))
+    .map(row => [
+      invoiceByTxnId.get(row.transaction_id) || '—',
+      row.product_name,
+      row.sku || '—',
+      row.discount_label || '—',
+      String(row.qty),
+      row.unit_price.toFixed(2),
+      row.line_total.toFixed(2),
+    ])
+
+  if (itemBody.length > 0) {
+    // Start a fresh page if there's not much room left for a heading + a few rows
+    if (y > doc.internal.pageSize.getHeight() - 120) {
+      doc.addPage()
+      y = 50
+    }
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(12)
+    doc.setTextColor(20, 20, 18)
+    doc.text('Item-by-Item Breakdown', margin, y)
+
+    autoTable(doc, {
+      startY: y + 10,
+      margin: { left: margin, right: margin },
+      head: [['Invoice No', 'Product', 'SKU', 'Price Mode', 'Qty', 'Unit Price', 'Line Total']],
+      body: itemBody,
+      theme: 'striped',
+      styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 5 },
+      headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
+      columnStyles: { 4: { halign: 'center' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
+    })
+  }
+
+  // ── FOOTER on every page ──
+  const pageCount = doc.getNumberOfPages()
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i)
+    const pageHeight = doc.internal.pageSize.getHeight()
+    doc.setFontSize(8)
+    doc.setTextColor(150, 148, 144)
+    doc.text(`Generated ${new Date().toLocaleString('en-US')}`, margin, pageHeight - 24)
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 24, { align: 'right' })
+  }
+
+  doc.save(`today-business-${new Date().toISOString().slice(0, 10)}.pdf`)
+  showToastMsg('PDF exported')
 }
 
 
@@ -382,7 +539,8 @@ onMounted(fetchTodayData)
         <!-- Payment method filter -->
         <div class="select-wrap">
           <select v-model="paymentFilter">
-            <option value="">All Payments</option>
+            <option value="all_no_later">All Payments (without pay later)</option>
+            <option value="all_with_later">All Payments (with pay later)</option>
             <option value="cash">Cash</option>
             <option value="card">Card</option>
             <option value="bank">Bank</option>
@@ -400,7 +558,7 @@ onMounted(fetchTodayData)
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
             Export CSV
           </button>
-          <button class="btn btn-primary" @click="exportPDF" title="Print / Save as PDF">
+          <button class="btn btn-primary" @click="exportPDF" title="Download PDF">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
             Export PDF
           </button>
@@ -840,13 +998,4 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .discount-badge.label-super    { border-color: #8b5cf6; background: rgba(139,92,246,0.12); color: #8b5cf6; }
 .discount-badge.label-original { border-color: var(--border); background: var(--surface); color: var(--text-sub); }
 
-/* ── PRINT (used by the "Export PDF" button via window.print()) ── */
-@media print {
-  :deep(.sidebar) { display: none !important; }
-  .toolbar { display: none !important; }
-  .page-wrap { display: block !important; background: #fff !important; color: #000 !important; }
-  .main { overflow: visible !important; }
-  .table-wrap { box-shadow: none !important; margin: 12px 0 !important; }
-  .expand-panel-row { display: none !important; } /* keep printed report compact */
-}
 </style>

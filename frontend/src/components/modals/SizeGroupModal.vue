@@ -2,27 +2,25 @@
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
-import { CATEGORY_TYPES } from '../../constants/categoryTypes'
 
 // ── PROPS & EMITS ──
 // modelValue controls whether this modal is visible (true = open, false = closed)
 // isLight comes from the parent so theme changes update the modal in real time
-const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
-const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
-
-// ── CATEGORY TYPE LIST ──
-// The fixed category types the user can choose from, shared with the
-// category-sizes linking screen so both stay in sync.
-const categoryOptions = CATEGORY_TYPES.map(t => ({ value: t, label: t }))
+// editGroup, when set, means "editing an existing group" instead of creating a new one
+const props = defineProps<{
+  modelValue: boolean
+  isLight: boolean
+  editGroup?: { id: string; name: string; options: string[] } | null
+}>()
+const emit = defineEmits<{
+  (e: 'update:modelValue', val: boolean): void
+  (e: 'saved'): void
+}>()
 
 // ── FORM FIELDS ──
-const categoryName = ref('')
-const categoryCode = ref('')
-const categoryType = ref('')
-
-// codeWasEdited flips to true if the user types directly into the Code field.
-// Once true, we stop auto-generating the code from the name.
-const codeWasEdited = ref(false)
+const groupName   = ref('')
+const optionInput = ref('')
+const options     = ref<string[]>([])
 
 // showErrors turns true when Save is clicked with empty fields
 const showErrors = ref(false)
@@ -33,44 +31,53 @@ const saveError  = ref('')
 // showToast controls the green success popup
 const showToast  = ref(false)
 
-// ── AUTO-GENERATE CODE FROM NAME ──
-// This function turns a category name into a clean code:
-//   "Kitchen Basics" → "kitchen_basics"
-//   "Kids & Toys"    → "kids_toys"
+// ── TAG INPUT ──
+// Typing a value and pressing Enter turns it into a chip in `options`
+function addOption() {
+  const val = optionInput.value.trim()
+  if (!val) return
+  if (!options.value.includes(val)) options.value.push(val)
+  optionInput.value = ''
+}
 
-
-// Watch categoryName — whenever the user types a name, auto-fill the Code field.
-// But only if the user has NOT already manually edited the Code field.
-
+function removeOption(val: string) {
+  options.value = options.value.filter(o => o !== val)
+}
 
 // ── KEYBOARD SHORTCUTS ──
-// Enter = save, Escape = cancel
+// Escape = cancel (Enter is handled by the tag input itself)
 function onKey(e: KeyboardEvent) {
-  if (e.key === 'Enter')  save()
   if (e.key === 'Escape') close()
 }
 
 watch(() => props.modelValue, (isOpen) => {
-  if (isOpen) window.addEventListener('keydown', onKey)
-  else        window.removeEventListener('keydown', onKey)
+  if (isOpen) {
+    window.addEventListener('keydown', onKey)
+    // Pre-fill the form when opened in edit mode
+    if (props.editGroup) {
+      groupName.value = props.editGroup.name
+      options.value   = [...props.editGroup.options]
+    }
+  } else {
+    window.removeEventListener('keydown', onKey)
+  }
 })
 
 // ── CLOSE ──
-// Tells the parent "please close me", then resets everything back to blank
 function close() {
   emit('update:modelValue', false)
-  categoryName.value  = ''
-  categoryCode.value  = ''
-  categoryType.value  = ''
-  codeWasEdited.value = false
-  showErrors.value    = false
-  saveError.value     = ''
+  groupName.value   = ''
+  optionInput.value = ''
+  options.value     = []
+  showErrors.value  = false
+  saveError.value   = ''
 }
 
 // ── SAVE ──
-// Validates all three fields, then inserts a new row into Supabase
+// Create mode: inserts one row into size_groups, then one row per option into size_options.
+// Edit mode: updates the group's name, then replaces all its options with the current chip list.
 async function save() {
-  if (!categoryName.value.trim() || !categoryCode.value.trim() || !categoryType.value) {
+  if (!groupName.value.trim() || options.value.length === 0) {
     showErrors.value = true
     return
   }
@@ -79,36 +86,65 @@ async function save() {
   saveError.value = ''
 
   try {
-    const { error } = await supabase.from('categories').insert({
-      name: categoryName.value,
-      code: categoryCode.value.trim(),
-      type: categoryType.value,
-    })
+    let groupId = props.editGroup?.id
 
-    if (error) {
-      // error.code 23505 means a UNIQUE constraint was broken (duplicate)
-      if (error.code === '23505') {
-        if (error.message.includes('name')) {
-          saveError.value = 'A category with this name already exists.'
-        } else if (error.message.includes('code')) {
-          saveError.value = 'A category with this code already exists.'
-        } else {
-          saveError.value = 'This category name or code already exists.'
-        }
-      } else {
-        saveError.value = error.message
+    if (groupId) {
+      const { error: updateError } = await supabase
+        .from('size_groups')
+        .update({ name: groupName.value.trim() })
+        .eq('id', groupId)
+
+      if (updateError) {
+        saveError.value = updateError.code === '23505'
+          ? 'A size group with this name already exists.'
+          : updateError.message
+        return
       }
+
+      // Simplest way to keep options in sync: wipe and re-insert
+      const { error: deleteError } = await supabase
+        .from('size_options')
+        .delete()
+        .eq('size_group_id', groupId)
+
+      if (deleteError) { saveError.value = deleteError.message; return }
+    } else {
+      const { data: group, error: groupError } = await supabase
+        .from('size_groups')
+        .insert({ name: groupName.value.trim() })
+        .select()
+        .single()
+
+      if (groupError) {
+        saveError.value = groupError.code === '23505'
+          ? 'A size group with this name already exists.'
+          : groupError.message
+        return
+      }
+
+      groupId = group.id
+    }
+
+    const rows = options.value.map((value, index) => ({
+      size_group_id: groupId,
+      value,
+      sort_order: index,
+    }))
+
+    const { error: optionsError } = await supabase.from('size_options').insert(rows)
+
+    if (optionsError) {
+      saveError.value = optionsError.message
       return
     }
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
   } finally {
-    // finally ALWAYS runs — whether there was an error or not — so saving never gets stuck
     saving.value = false
   }
 
-  // Show green toast, close modal, then hide toast after 3 seconds
   showToast.value = true
+  emit('saved')
   close()
   setTimeout(() => { showToast.value = false }, 3000)
 }
@@ -116,14 +152,12 @@ async function save() {
 
 <template>
   <Transition name="fade">
-    <!-- The dark overlay — clicking outside the box closes the modal -->
     <div v-if="modelValue" class="modal-overlay" :class="{ light: props.isLight }" @click.self="close">
-
       <div class="modal-box">
 
         <!-- Header -->
         <div class="modal-header">
-          <div class="modal-title">Add Main Category</div>
+          <div class="modal-title">{{ editGroup ? 'Edit Size Group' : 'Add Size Group' }}</div>
           <button class="modal-close" @click="close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="18" y1="6"  x2="6"  y2="18"/>
@@ -132,50 +166,38 @@ async function save() {
           </button>
         </div>
 
-        <!-- Body: three required fields -->
+        <!-- Body -->
         <div class="modal-body">
 
-          <!-- Field 1: Category Name -->
+          <!-- Field 1: Group Name -->
           <div class="form-field">
-            <label class="form-label">Category Name *</label>
+            <label class="form-label">Group Name *</label>
             <input
-              v-model="categoryName"
+              v-model="groupName"
               class="form-input"
-              :class="{ error: showErrors && !categoryName }"
-              placeholder="e.g. Oversize T-shirts"
+              :class="{ error: showErrors && !groupName }"
+              placeholder="e.g. UK Size"
             />
-            <span v-if="showErrors && !categoryName" class="form-error">This field is required</span>
+            <span v-if="showErrors && !groupName" class="form-error">This field is required</span>
           </div>
 
-          <!-- Field 2: Code (auto-generated but editable) -->
+          <!-- Field 2: Size Options (tag input) -->
           <div class="form-field">
-            <label class="form-label">Code * <span class="form-hint">(auto-generated)</span></label>
+            <label class="form-label">Size Options * <span class="form-hint">(type a value, press Enter)</span></label>
             <input
-              v-model="categoryCode"
+              v-model="optionInput"
               class="form-input"
-              :class="{ error: showErrors && !categoryCode }"
-              placeholder="e.g. A12"
-              @input="codeWasEdited = true"
+              :class="{ error: showErrors && options.length === 0 }"
+              placeholder="e.g. S"
+              @keydown.enter.prevent="addOption"
             />
-            <span v-if="showErrors && !categoryCode" class="form-error">This field is required</span>
-          </div>
-
-          <!-- Field 3: Category Type dropdown -->
-          <div class="form-field">
-            <label class="form-label">Category Type *</label>
-            <select
-              v-model="categoryType"
-              class="form-input form-select"
-              :class="{ error: showErrors && !categoryType }"
-            >
-              <option value="" disabled>Select a category type…</option>
-              <option
-                v-for="opt in categoryOptions"
-                :key="opt.value"
-                :value="opt.value"
-              >{{ opt.label }}</option>
-            </select>
-            <span v-if="showErrors && !categoryType" class="form-error">Please select a category type</span>
+            <div v-if="options.length" class="chip-list">
+              <span v-for="opt in options" :key="opt" class="chip">
+                {{ opt }}
+                <button class="chip-remove" @click="removeOption(opt)">&times;</button>
+              </span>
+            </div>
+            <span v-if="showErrors && options.length === 0" class="form-error">Add at least one size option</span>
           </div>
 
         </div>
@@ -195,12 +217,11 @@ async function save() {
     </div>
   </Transition>
 
-  <!-- Green success toast — appears bottom-right after saving -->
-  <Toast message="New category added successfully!" :show="showToast" />
+  <Toast :message="editGroup ? 'Size group updated successfully!' : 'New size group added successfully!'" :show="showToast" />
 </template>
 
 <style scoped>
-/* ── CSS VARIABLES ── copied from SupplierModal so colours match across all modals */
+/* ── CSS VARIABLES ── copied from CategoryModal.vue so colours match across all modals */
 .modal-overlay {
   --bg-panel:    #181817;
   --bg-card:     #1f1f1e;
@@ -224,7 +245,6 @@ async function save() {
   z-index: 999;
 }
 
-/* ── LIGHT THEME OVERRIDES ── */
 .modal-overlay.light {
   --bg-panel:    #FFFFFF;
   --bg-card:     #FAFAF8;
@@ -300,7 +320,6 @@ async function save() {
   text-transform: uppercase;
 }
 
-/* Small grey hint shown next to the Code label */
 .form-hint {
   font-size: 10px;
   color: var(--text-muted);
@@ -325,24 +344,48 @@ async function save() {
 .form-input:focus        { border-color: var(--border-mid); }
 .form-input.error        { border-color: #ef4444; }
 
-/* The select dropdown needs a few extra rules so it matches the text inputs */
-.form-select {
-  appearance: none;
-  /* Small down-arrow icon drawn with CSS */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888884' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
-  padding-right: 36px;
-  cursor: pointer;
+/* ── CHIP LIST ── */
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
 }
 
-/* Red error message shown under empty fields */
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-mid);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.chip-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chip-remove:hover { background: var(--bg-hover); color: var(--text); }
+
 .form-error {
   font-size: 11px;
   color: #ef4444;
 }
 
-/* Red box shown if Supabase returns an error */
 .save-error {
   margin: 0 24px;
   padding: 10px 14px;
@@ -390,7 +433,6 @@ async function save() {
 
 .modal-save:hover { opacity: 0.85; }
 
-/* Smooth fade in/out animation */
 .fade-enter-active,
 .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from,

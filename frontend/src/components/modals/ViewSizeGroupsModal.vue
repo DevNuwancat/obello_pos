@@ -1,127 +1,76 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
-import CategorySizeLinksModal from './CategorySizeLinksModal.vue'
+import SizeGroupModal from './SizeGroupModal.vue'
 
 const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
 
 // ── DATA SHAPE ──
-// Each row we get back from Supabase looks like this
-interface Category {
-  id:         string
-  name:       string
-  code:       string
-  type:       string
-  is_active:  boolean
-  created_at: string
+interface SizeOption { id: string; value: string; sort_order: number }
+interface SizeGroup {
+  id:           string
+  name:         string
+  is_active:    boolean
+  created_at:   string
+  size_options: SizeOption[]
 }
 
 // ── STATE ──
-const categories  = ref<Category[]>([])
+const groups      = ref<SizeGroup[]>([])
 const loading     = ref(false)
 const fetchError  = ref('')
 const toastMsg    = ref('')
 const showToast   = ref(false)
-
-// ── SEARCH ──
-// The text the user types into the search box
 const searchQuery = ref('')
 
-// ── SORT ──
-// Two sort modes:
-//   'date'  — newest created_at first (default)
-//   'type'  — follows the custom category-type order below
-const sortMode = ref<'date' | 'type'>('date')
-
-// This defines the special order for category types.
-// The lower the number, the higher up in the list it appears.
-const TYPE_ORDER: Record<string, number> = {
-  'Clothing & Accessories':             0,
-  'Kitchen Essentials':                 1,
-  'Household Items - Cloth-related':    2,
-  'Household Items - Cleaning & Others':3,
-  'Gardening Items':                    4,
-  'Personal Items':                     5,
-  'Electrical Items':                   6,
-  'Stationery':                         7,
-  'Bathroom Items':                     8,
-  'Toys':                               9,
-  'Tools':                             10,
-  'Vehicle Items':                     11,
-}
-
 // ── FETCH ──
-// Load all categories from Supabase every time the modal opens
-async function fetchCategories() {
+async function fetchGroups() {
   loading.value    = true
   fetchError.value = ''
 
   try {
     const { data, error } = await supabase
-      .from('categories')
-      .select('id, name, code, type, is_active, created_at')
+      .from('size_groups')
+      .select('id, name, is_active, created_at, size_options(id, value, sort_order)')
       .order('created_at', { ascending: false })
 
     if (error) { fetchError.value = error.message; return }
-    categories.value = data ?? []
+
+    // Sort each group's options by sort_order so chips display in the order they were added
+    groups.value = (data ?? []).map(g => ({
+      ...g,
+      size_options: [...g.size_options].sort((a, b) => a.sort_order - b.sort_order),
+    }))
   } catch {
-    fetchError.value = 'Could not load categories. Please try again.'
+    fetchError.value = 'Could not load size groups. Please try again.'
   } finally {
     loading.value = false
   }
 }
 
-// Re-fetch whenever the modal opens
-watch(() => props.modelValue, (isOpen) => { if (isOpen) fetchCategories() })
+watch(() => props.modelValue, (isOpen) => { if (isOpen) fetchGroups() })
 
-// ── FILTERED + SORTED LIST ──
-// This is what we actually show in the template.
-// It starts from categories.value, then:
-//   1. filters by the search box
-//   2. sorts by the active sort mode
-const displayList = computed(() => {
-  // Step 1 — filter
+// ── FILTERED LIST ──
+const displayList = () => {
   const q = searchQuery.value.toLowerCase().trim()
-  const filtered = q
-    ? categories.value.filter(c =>
-        c.name.toLowerCase().includes(q) ||
-        c.code.toLowerCase().includes(q)
-      )
-    : categories.value
-
-  // Step 2 — sort (we spread so we don't mutate the original array)
-  return [...filtered].sort((a, b) => {
-    if (sortMode.value === 'date') {
-      // Newest first — bigger timestamp = earlier in list
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    } else {
-      // Custom type order. If a type is not in the map, push it to the end (999)
-      return (TYPE_ORDER[a.type] ?? 999) - (TYPE_ORDER[b.type] ?? 999)
-    }
-  })
-})
+  if (!q) return groups.value
+  return groups.value.filter(g => g.name.toLowerCase().includes(q))
+}
 
 // ── TOGGLE ENABLED ──
-// Flips the enabled flag for one category in Supabase,
-// then updates the local list immediately so the UI reflects the change
-async function toggleEnabled(cat: Category) {
-  const newVal = !cat.is_active
+async function toggleEnabled(group: SizeGroup) {
+  const newVal = !group.is_active
 
   try {
     const { error } = await supabase
-      .from('categories')
+      .from('size_groups')
       .update({ is_active: newVal })
-      .eq('id', cat.id)
+      .eq('id', group.id)
 
-    if (error) {
-      showMsg('Could not update status. Please try again.')
-      return
-    }
-
-    // Update the local copy so the toggle flips instantly without re-fetching
-    cat.is_active = newVal
+    if (error) { showMsg('Could not update status. Please try again.'); return }
+    group.is_active = newVal
   } catch {
     showMsg('Something went wrong. Please try again.')
   }
@@ -130,18 +79,17 @@ async function toggleEnabled(cat: Category) {
 // ── DELETE ──
 const deletingId = ref<string | null>(null)
 
-async function deleteCategory(id: string) {
+async function deleteGroup(id: string) {
   deletingId.value = id
 
   try {
-    const { error } = await supabase.from('categories').delete().eq('id', id)
+    const { error } = await supabase.from('size_groups').delete().eq('id', id)
 
     if (error) {
       showMsg('Delete failed: ' + error.message)
     } else {
-      // Remove from local list instantly — no need to re-fetch
-      categories.value = categories.value.filter(c => c.id !== id)
-      showMsg('Category deleted.')
+      groups.value = groups.value.filter(g => g.id !== id)
+      showMsg('Size group deleted.')
     }
   } catch {
     showMsg('Something went wrong. Please try again.')
@@ -150,19 +98,23 @@ async function deleteCategory(id: string) {
   }
 }
 
-// ── MANAGE SIZES ──
-// Clicking a category row opens the size-toggle screen for that specific sub-category
-const showSizesModal   = ref(false)
-const sizesForId       = ref('')
-const sizesForName     = ref('')
+// ── EDIT ──
+const showEditModal = ref(false)
+const editingGroup  = ref<{ id: string; name: string; options: string[] } | null>(null)
 
-function openSizes(cat: Category) {
-  sizesForId.value    = cat.id
-  sizesForName.value  = cat.name
-  showSizesModal.value = true
+function openEdit(group: SizeGroup) {
+  editingGroup.value = {
+    id:      group.id,
+    name:    group.name,
+    options: group.size_options.map(o => o.value),
+  }
+  showEditModal.value = true
 }
 
-// ── HELPER: show toast ──
+function onEditSaved() {
+  fetchGroups()
+}
+
 function showMsg(msg: string) {
   toastMsg.value  = msg
   showToast.value = true
@@ -172,7 +124,6 @@ function showMsg(msg: string) {
 function close() {
   emit('update:modelValue', false)
   searchQuery.value = ''
-  sortMode.value    = 'date'
 }
 </script>
 
@@ -184,8 +135,8 @@ function close() {
         <!-- ── HEADER ── -->
         <div class="modal-header">
           <div>
-            <div class="modal-title">Main Categories</div>
-            <div class="modal-sub">All categories on record</div>
+            <div class="modal-title">Size Groups</div>
+            <div class="modal-sub">All size groups on record</div>
           </div>
           <button class="modal-close" @click="close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -195,10 +146,8 @@ function close() {
           </button>
         </div>
 
-        <!-- ── TOOLBAR: search + sort buttons ── -->
+        <!-- ── TOOLBAR: search ── -->
         <div class="toolbar">
-
-          <!-- Search box -->
           <div class="search-wrap">
             <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -206,24 +155,9 @@ function close() {
             <input
               v-model="searchQuery"
               class="search-input"
-              placeholder="Search by name or code…"
+              placeholder="Search by name…"
             />
           </div>
-
-          <!-- Sort buttons -->
-          <div class="sort-group">
-            <button
-              class="sort-btn"
-              :class="{ active: sortMode === 'date' }"
-              @click="sortMode = 'date'"
-            >Date Created</button>
-            <button
-              class="sort-btn"
-              :class="{ active: sortMode === 'type' }"
-              @click="sortMode = 'type'"
-            >Type Order</button>
-          </div>
-
         </div>
 
         <!-- ── BODY ── -->
@@ -231,53 +165,52 @@ function close() {
 
           <div v-if="loading"     class="state-msg">Loading…</div>
           <div v-else-if="fetchError" class="state-error">{{ fetchError }}</div>
-          <div v-else-if="displayList.length === 0" class="state-msg">
-            {{ searchQuery ? 'No categories match your search.' : 'No categories added yet.' }}
+          <div v-else-if="displayList().length === 0" class="state-msg">
+            {{ searchQuery ? 'No size groups match your search.' : 'No size groups added yet.' }}
           </div>
 
-          <!-- Category list -->
-          <div v-else class="cat-list">
+          <div v-else class="group-list">
             <div
-              v-for="cat in displayList"
-              :key="cat.id"
-              class="cat-row"
-              title="Click to manage sizes for this category"
-              @click="openSizes(cat)"
+              v-for="group in displayList()"
+              :key="group.id"
+              class="group-row"
             >
-              <!-- Code badge on the left -->
-              <div class="code-badge">{{ cat.code }}</div>
-
-              <!-- Name, code, type text -->
-              <div class="cat-info">
-                <div class="cat-name">{{ cat.name }}</div>
-                <div class="cat-meta">
-                  <span class="cat-code">{{ cat.code }}</span>
-                  <span class="cat-dot">·</span>
-                  <span class="cat-type">{{ cat.type }}</span>
+              <div class="group-info">
+                <div class="group-name">{{ group.name }}</div>
+                <div class="chip-list">
+                  <span v-for="opt in group.size_options" :key="opt.id" class="chip">{{ opt.value }}</span>
                 </div>
               </div>
 
               <!-- Enable / Disable toggle -->
               <button
                 class="toggle-btn"
-                :class="{ enabled: cat.is_active }"
-                :title="cat.is_active ? 'Click to disable' : 'Click to enable'"
-                @click.stop="toggleEnabled(cat)"
+                :class="{ enabled: group.is_active }"
+                :title="group.is_active ? 'Click to disable' : 'Click to enable'"
+                @click="toggleEnabled(group)"
               >
                 <span class="toggle-track">
                   <span class="toggle-thumb"></span>
                 </span>
-                <span class="toggle-label">{{ cat.is_active ? 'Active' : 'Off' }}</span>
+                <span class="toggle-label">{{ group.is_active ? 'Active' : 'Off' }}</span>
+              </button>
+
+              <!-- Edit button -->
+              <button class="edit-btn" title="Edit size group" @click="openEdit(group)">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
               </button>
 
               <!-- Delete button -->
               <button
                 class="delete-btn"
-                :disabled="deletingId === cat.id"
-                title="Delete category"
-                @click.stop="deleteCategory(cat.id)"
+                :disabled="deletingId === group.id"
+                title="Delete size group"
+                @click="deleteGroup(group.id)"
               >
-                <svg v-if="deletingId !== cat.id" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <svg v-if="deletingId !== group.id" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
                   <path d="M10 11v6M14 11v6"/>
@@ -294,11 +227,11 @@ function close() {
     </div>
   </Transition>
 
-  <CategorySizeLinksModal
-    v-model="showSizesModal"
+  <SizeGroupModal
+    v-model="showEditModal"
     :isLight="isLight"
-    :categoryId="sizesForId"
-    :categoryName="sizesForName"
+    :editGroup="editingGroup"
+    @saved="onEditSaved"
   />
 
   <Toast :message="toastMsg" :show="showToast" />
@@ -316,7 +249,7 @@ function close() {
   --text-sub:   #888884;
   --text-muted: #555551;
   --accent-bg:  #F5F2EE;
-  --accent-text:#111110;
+  --accent-text: #111110;
   --shadow-lg:  0 8px 32px rgba(0,0,0,0.6);
 
   position: fixed;
@@ -329,7 +262,6 @@ function close() {
   z-index: 999;
 }
 
-/* ── LIGHT THEME ── */
 .modal-overlay.light {
   --bg-panel:   #FFFFFF;
   --bg-card:    #FAFAF8;
@@ -340,7 +272,7 @@ function close() {
   --text-sub:   #7A776F;
   --text-muted: #B0ADA5;
   --accent-bg:  #141412;
-  --accent-text:#F7F5F2;
+  --accent-text: #F7F5F2;
   --shadow-lg:  0 8px 32px rgba(0,0,0,0.12);
 }
 
@@ -356,7 +288,6 @@ function close() {
   overflow: hidden;
 }
 
-/* ── HEADER ── */
 .modal-header {
   display: flex;
   align-items: flex-start;
@@ -391,12 +322,10 @@ function close() {
   justify-content: center;
   color: var(--text-muted);
   transition: color 0.15s, background 0.15s;
-  flex-shrink: 0;
 }
 
 .modal-close:hover { background: var(--bg-hover); color: var(--text); }
 
-/* ── TOOLBAR ── */
 .toolbar {
   display: flex;
   align-items: center;
@@ -406,7 +335,6 @@ function close() {
   flex-shrink: 0;
 }
 
-/* Search box */
 .search-wrap {
   flex: 1;
   position: relative;
@@ -437,39 +365,6 @@ function close() {
 .search-input::placeholder { color: var(--text-muted); }
 .search-input:focus         { border-color: var(--border-mid); }
 
-/* Sort buttons */
-.sort-group {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.sort-btn {
-  padding: 7px 13px;
-  border-radius: 7px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11.5px;
-  font-family: 'DM Sans', sans-serif;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-  white-space: nowrap;
-}
-
-/* Active sort button gets a filled look */
-.sort-btn.active {
-  background: var(--accent-bg);
-  color: var(--accent-text);
-  border-color: transparent;
-}
-
-.sort-btn:not(.active):hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-/* ── BODY ── */
 .modal-body {
   flex: 1;
   overflow-y: auto;
@@ -495,47 +390,23 @@ function close() {
   font-size: 12.5px;
 }
 
-/* ── CATEGORY LIST ── */
-.cat-list { display: flex; flex-direction: column; }
+.group-list { display: flex; flex-direction: column; }
 
-.cat-row {
+.group-row {
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 13px 24px;
   border-bottom: 1px solid var(--border);
   transition: background 0.15s;
-  cursor: pointer;
 }
 
-.cat-row:last-child { border-bottom: none; }
-.cat-row:hover      { background: var(--bg-hover); }
+.group-row:last-child { border-bottom: none; }
+.group-row:hover      { background: var(--bg-hover); }
 
-/* Code badge — like the avatar in ViewSuppliersModal */
-.code-badge {
-  min-width: 36px;
-  height: 36px;
-  padding: 0 8px;
-  border-radius: 8px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-mid);
-  color: var(--text-sub);
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 600;
-  font-size: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  letter-spacing: 0.02em;
-  max-width: 64px;
-  overflow: hidden;
-  white-space: nowrap;
-}
+.group-info { flex: 1; min-width: 0; }
 
-.cat-info { flex: 1; min-width: 0; }
-
-.cat-name {
+.group-name {
   font-size: 13.5px;
   font-weight: 500;
   color: var(--text);
@@ -544,24 +415,20 @@ function close() {
   text-overflow: ellipsis;
 }
 
-.cat-meta {
+.chip-list {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
-  margin-top: 2px;
+  margin-top: 5px;
 }
 
-.cat-code {
-  font-size: 11px;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-}
-
-.cat-dot { font-size: 11px; color: var(--text-muted); }
-
-.cat-type {
-  font-size: 11px;
+.chip {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-mid);
   color: var(--text-sub);
+  font-size: 11px;
 }
 
 /* ── TOGGLE BUTTON ── */
@@ -588,7 +455,6 @@ function close() {
   flex-shrink: 0;
 }
 
-/* When enabled, the track turns green */
 .toggle-btn.enabled .toggle-track { background: #22c55e; }
 
 .toggle-thumb {
@@ -600,7 +466,6 @@ function close() {
   flex-shrink: 0;
 }
 
-/* Slide the thumb to the right when enabled */
 .toggle-btn.enabled .toggle-thumb { transform: translateX(14px); }
 
 .toggle-label {
@@ -611,6 +476,24 @@ function close() {
 }
 
 .toggle-btn.enabled .toggle-label { color: #22c55e; }
+
+/* ── EDIT BUTTON ── */
+.edit-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.edit-btn:hover { background: var(--bg-hover); color: var(--text); }
 
 /* ── DELETE BUTTON ── */
 .delete-btn {
@@ -636,12 +519,10 @@ function close() {
 
 .delete-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ── SCROLLBAR ── */
 .modal-body::-webkit-scrollbar       { width: 4px; }
 .modal-body::-webkit-scrollbar-track { background: transparent; }
 .modal-body::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 2px; }
 
-/* ── FADE ANIMATION ── */
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from,   .fade-leave-to     { opacity: 0; }
 </style>

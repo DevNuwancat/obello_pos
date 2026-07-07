@@ -2,13 +2,15 @@
 import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
+import { fetchSizesForCategory } from '../../composables/useCategorySizes'
 
 const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
 
-// ── FIXED LISTS ──
-const SIZES = ['XS','S','M','L','XL','XXL','XXXL','Free Size']
-const OWNERS = ['Obello (O)','Shashika (S)','Admin (A)']
+// ── SIZES FOR THE SELECTED MAIN CATEGORY ──
+// Loaded from Supabase based on which size groups are active for this category type.
+// Falls back to ['Free Size'] if the type has no size groups configured.
+const availableSizes = ref<string[]>(['Free Size'])
 
 // ── SUPABASE: CATEGORIES ──
 type Category = { id: string; name: string; code: string; type: string }
@@ -42,7 +44,14 @@ const subCategories = computed(() =>
 )
 
 // When the main type changes, reset the sub-category selection
+// (size options depend on the sub-category, so they reset too — see below)
 watch(selectedType, () => { selectedCategory.value = null })
+
+// When the sub-category changes, reload the size options configured for it
+watch(selectedCategory, async (cat) => {
+  size.value = ''
+  availableSizes.value = await fetchSizesForCategory(cat?.id)
+})
 
 // ── SUPABASE: SUPPLIERS ──
 type Supplier = { id: string; name: string; code: string }
@@ -58,11 +67,32 @@ async function getSuppliers() {
   else supplierList.value = data || []
 }
 
-// Reload both dropdowns every time the modal opens
+// ── SUPABASE: OWNERS ──
+type Owner = { id: string; name: string; code: string }
+const ownerList     = ref<Owner[]>([])
+// We store the full owner object so we can use its code in the SKU
+const selectedOwner = ref<Owner | null>(null)
+
+async function getOwners() {
+  const { data, error } = await supabase
+    .from('owners')
+    .select('id, name, code')
+    .eq('is_active', true)
+    .order('name')
+  if (error) console.error('Owner fetch error:', error)
+  else {
+    ownerList.value = data || []
+    // Default to the first owner so the form isn't left blank
+    if (!selectedOwner.value) selectedOwner.value = ownerList.value[0] || null
+  }
+}
+
+// Reload all dropdowns every time the modal opens
 watch(() => props.modelValue, (isOpen) => {
   if (isOpen) {
     getAllCategories()
     getSuppliers()
+    getOwners()
     window.addEventListener('keydown', onKey)
   } else {
     window.removeEventListener('keydown', onKey)
@@ -81,7 +111,6 @@ const barcode       = ref('')
 const lotNo         = ref('')
 const designNo      = ref('')
 const color         = ref('')
-const owner         = ref('Obello (O)')
 
 // ── AUTO-NAME ──
 // Automatically fills Product Name as "{Category} {Size} {Color}"
@@ -166,10 +195,7 @@ async function uploadImage(): Promise<string | null> {
 // New pattern: {OwnerCode}{SupplierCode}/{LotNo}/{DesignNo}/{CategoryCode}/{Size}
 // Example: OPM/12/034/T01/XL
 const sku = computed(() => {
-  // Extract the single letter from e.g. "Obello (O)" → "O"
-  const ownerMatch = owner.value.match(/\(([A-Z])\)/)
-  const ownerCode  = ownerMatch ? ownerMatch[1] : 'X'
-
+  const ownerCode  = selectedOwner.value?.code   || 'X'
   const supCode  = selectedSupplier.value?.code  || 'XX'
   const lot      = lotNo.value                   || '00'
   const des      = designNo.value                || '000'
@@ -227,6 +253,7 @@ function resetForm() {
   selectedType.value      = ''
   selectedCategory.value  = null
   selectedSupplier.value  = null
+  availableSizes.value    = ['Free Size']
   size.value          = ''
   name.value          = ''
   cost.value          = ''
@@ -238,7 +265,7 @@ function resetForm() {
   lotNo.value         = ''
   designNo.value      = ''
   color.value         = ''
-  owner.value         = 'Obello (O)'
+  selectedOwner.value = ownerList.value[0] || null
   imagePreview.value  = null
   imageFile.value     = null
   nameWasEdited.value = false
@@ -280,7 +307,7 @@ async function save() {
       design_no:      designNo.value,
       color:          color.value,
       supplier_id:    selectedSupplier.value?.id || null,
-      owner:          owner.value,
+      owner:          selectedOwner.value?.name || null,
       sku:            sku.value || null,
       image_url,
     })
@@ -373,7 +400,7 @@ async function save() {
                 <label class="form-label">Size</label>
                 <select v-model="size" class="form-input form-select">
                   <option value="">Select size</option>
-                  <option v-for="s in SIZES" :key="s" :value="s">{{ s }}</option>
+                  <option v-for="s in availableSizes" :key="s" :value="s">{{ s }}</option>
                 </select>
               </div>
 
@@ -485,8 +512,9 @@ async function save() {
                 </div>
                 <div class="form-field">
                   <label class="form-label">Owner</label>
-                  <select v-model="owner" class="form-input form-select">
-                    <option v-for="o in OWNERS" :key="o" :value="o">{{ o }}</option>
+                  <select v-model="selectedOwner" class="form-input form-select">
+                    <option :value="null">Select owner</option>
+                    <option v-for="o in ownerList" :key="o.id" :value="o">{{ o.name }} ({{ o.code }})</option>
                   </select>
                 </div>
               </div>

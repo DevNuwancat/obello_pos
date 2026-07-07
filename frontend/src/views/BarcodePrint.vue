@@ -564,7 +564,22 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 
   :deep(.sidebar) { display: none !important; }
   .page-header, .stats-bar, .toolbar, .table-wrap { display: none !important; }
-  .page-wrap { display: block !important; background: #fff !important; }
+
+  /* min-height: 100vh (used for normal on-screen layout) reserves a full
+     blank page before the label sheet if left in place while printing —
+     force both containers back to their natural content height instead. */
+  .page-wrap {
+    display: block !important;
+    min-height: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+  .main {
+    display: block !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
 
   .label-sheet {
     display: grid !important;

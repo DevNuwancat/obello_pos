@@ -2,27 +2,21 @@
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
-import { CATEGORY_TYPES } from '../../constants/categoryTypes'
 
-// ── PROPS & EMITS ──
-// modelValue controls whether this modal is visible (true = open, false = closed)
-// isLight comes from the parent so theme changes update the modal in real time
-const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
-const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
-
-// ── CATEGORY TYPE LIST ──
-// The fixed category types the user can choose from, shared with the
-// category-sizes linking screen so both stay in sync.
-const categoryOptions = CATEGORY_TYPES.map(t => ({ value: t, label: t }))
+// editOwner, when set, means "editing an existing owner" instead of creating a new one
+const props = defineProps<{
+  modelValue: boolean
+  isLight: boolean
+  editOwner?: { id: string; name: string; code: string } | null
+}>()
+const emit = defineEmits<{
+  (e: 'update:modelValue', val: boolean): void
+  (e: 'saved'): void
+}>()
 
 // ── FORM FIELDS ──
-const categoryName = ref('')
-const categoryCode = ref('')
-const categoryType = ref('')
-
-// codeWasEdited flips to true if the user types directly into the Code field.
-// Once true, we stop auto-generating the code from the name.
-const codeWasEdited = ref(false)
+const ownerName = ref('')
+const ownerCode = ref('')
 
 // showErrors turns true when Save is clicked with empty fields
 const showErrors = ref(false)
@@ -33,44 +27,37 @@ const saveError  = ref('')
 // showToast controls the green success popup
 const showToast  = ref(false)
 
-// ── AUTO-GENERATE CODE FROM NAME ──
-// This function turns a category name into a clean code:
-//   "Kitchen Basics" → "kitchen_basics"
-//   "Kids & Toys"    → "kids_toys"
-
-
-// Watch categoryName — whenever the user types a name, auto-fill the Code field.
-// But only if the user has NOT already manually edited the Code field.
-
-
 // ── KEYBOARD SHORTCUTS ──
-// Enter = save, Escape = cancel
 function onKey(e: KeyboardEvent) {
   if (e.key === 'Enter')  save()
   if (e.key === 'Escape') close()
 }
 
 watch(() => props.modelValue, (isOpen) => {
-  if (isOpen) window.addEventListener('keydown', onKey)
-  else        window.removeEventListener('keydown', onKey)
+  if (isOpen) {
+    window.addEventListener('keydown', onKey)
+    // Pre-fill the form when opened in edit mode
+    if (props.editOwner) {
+      ownerName.value = props.editOwner.name
+      ownerCode.value = props.editOwner.code
+    }
+  } else {
+    window.removeEventListener('keydown', onKey)
+  }
 })
 
 // ── CLOSE ──
-// Tells the parent "please close me", then resets everything back to blank
 function close() {
   emit('update:modelValue', false)
-  categoryName.value  = ''
-  categoryCode.value  = ''
-  categoryType.value  = ''
-  codeWasEdited.value = false
-  showErrors.value    = false
-  saveError.value     = ''
+  ownerName.value  = ''
+  ownerCode.value  = ''
+  showErrors.value = false
+  saveError.value  = ''
 }
 
 // ── SAVE ──
-// Validates all three fields, then inserts a new row into Supabase
 async function save() {
-  if (!categoryName.value.trim() || !categoryCode.value.trim() || !categoryType.value) {
+  if (!ownerName.value.trim() || !ownerCode.value.trim()) {
     showErrors.value = true
     return
   }
@@ -79,21 +66,20 @@ async function save() {
   saveError.value = ''
 
   try {
-    const { error } = await supabase.from('categories').insert({
-      name: categoryName.value,
-      code: categoryCode.value.trim(),
-      type: categoryType.value,
-    })
+    const payload = { name: ownerName.value.trim(), code: ownerCode.value.trim() }
+
+    const { error } = props.editOwner
+      ? await supabase.from('owners').update(payload).eq('id', props.editOwner.id)
+      : await supabase.from('owners').insert(payload)
 
     if (error) {
-      // error.code 23505 means a UNIQUE constraint was broken (duplicate)
       if (error.code === '23505') {
         if (error.message.includes('name')) {
-          saveError.value = 'A category with this name already exists.'
+          saveError.value = 'An owner with this name already exists.'
         } else if (error.message.includes('code')) {
-          saveError.value = 'A category with this code already exists.'
+          saveError.value = 'An owner with this code already exists.'
         } else {
-          saveError.value = 'This category name or code already exists.'
+          saveError.value = 'This owner name or code already exists.'
         }
       } else {
         saveError.value = error.message
@@ -103,12 +89,11 @@ async function save() {
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
   } finally {
-    // finally ALWAYS runs — whether there was an error or not — so saving never gets stuck
     saving.value = false
   }
 
-  // Show green toast, close modal, then hide toast after 3 seconds
   showToast.value = true
+  emit('saved')
   close()
   setTimeout(() => { showToast.value = false }, 3000)
 }
@@ -116,14 +101,12 @@ async function save() {
 
 <template>
   <Transition name="fade">
-    <!-- The dark overlay — clicking outside the box closes the modal -->
     <div v-if="modelValue" class="modal-overlay" :class="{ light: props.isLight }" @click.self="close">
-
       <div class="modal-box">
 
         <!-- Header -->
         <div class="modal-header">
-          <div class="modal-title">Add Main Category</div>
+          <div class="modal-title">{{ editOwner ? 'Edit Owner' : 'Add Owner' }}</div>
           <button class="modal-close" @click="close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="18" y1="6"  x2="6"  y2="18"/>
@@ -132,50 +115,29 @@ async function save() {
           </button>
         </div>
 
-        <!-- Body: three required fields -->
+        <!-- Body: two required inputs -->
         <div class="modal-body">
 
-          <!-- Field 1: Category Name -->
           <div class="form-field">
-            <label class="form-label">Category Name *</label>
+            <label class="form-label">Owner Name *</label>
             <input
-              v-model="categoryName"
+              v-model="ownerName"
               class="form-input"
-              :class="{ error: showErrors && !categoryName }"
-              placeholder="e.g. Oversize T-shirts"
+              :class="{ error: showErrors && !ownerName }"
+              placeholder="Enter owner name…"
             />
-            <span v-if="showErrors && !categoryName" class="form-error">This field is required</span>
+            <span v-if="showErrors && !ownerName" class="form-error">This field is required</span>
           </div>
 
-          <!-- Field 2: Code (auto-generated but editable) -->
           <div class="form-field">
-            <label class="form-label">Code * <span class="form-hint">(auto-generated)</span></label>
+            <label class="form-label">Owner Code *</label>
             <input
-              v-model="categoryCode"
+              v-model="ownerCode"
               class="form-input"
-              :class="{ error: showErrors && !categoryCode }"
-              placeholder="e.g. A12"
-              @input="codeWasEdited = true"
+              :class="{ error: showErrors && !ownerCode }"
+              placeholder="Enter owner code…"
             />
-            <span v-if="showErrors && !categoryCode" class="form-error">This field is required</span>
-          </div>
-
-          <!-- Field 3: Category Type dropdown -->
-          <div class="form-field">
-            <label class="form-label">Category Type *</label>
-            <select
-              v-model="categoryType"
-              class="form-input form-select"
-              :class="{ error: showErrors && !categoryType }"
-            >
-              <option value="" disabled>Select a category type…</option>
-              <option
-                v-for="opt in categoryOptions"
-                :key="opt.value"
-                :value="opt.value"
-              >{{ opt.label }}</option>
-            </select>
-            <span v-if="showErrors && !categoryType" class="form-error">Please select a category type</span>
+            <span v-if="showErrors && !ownerCode" class="form-error">This field is required</span>
           </div>
 
         </div>
@@ -195,12 +157,10 @@ async function save() {
     </div>
   </Transition>
 
-  <!-- Green success toast — appears bottom-right after saving -->
-  <Toast message="New category added successfully!" :show="showToast" />
+  <Toast :message="editOwner ? 'Owner updated successfully!' : 'New owner added successfully!'" :show="showToast" />
 </template>
 
 <style scoped>
-/* ── CSS VARIABLES ── copied from SupplierModal so colours match across all modals */
 .modal-overlay {
   --bg-panel:    #181817;
   --bg-card:     #1f1f1e;
@@ -224,7 +184,6 @@ async function save() {
   z-index: 999;
 }
 
-/* ── LIGHT THEME OVERRIDES ── */
 .modal-overlay.light {
   --bg-panel:    #FFFFFF;
   --bg-card:     #FAFAF8;
@@ -300,15 +259,6 @@ async function save() {
   text-transform: uppercase;
 }
 
-/* Small grey hint shown next to the Code label */
-.form-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 400;
-}
-
 .form-input {
   padding: 11px 14px;
   background: var(--bg-card);
@@ -325,24 +275,11 @@ async function save() {
 .form-input:focus        { border-color: var(--border-mid); }
 .form-input.error        { border-color: #ef4444; }
 
-/* The select dropdown needs a few extra rules so it matches the text inputs */
-.form-select {
-  appearance: none;
-  /* Small down-arrow icon drawn with CSS */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888884' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
-  padding-right: 36px;
-  cursor: pointer;
-}
-
-/* Red error message shown under empty fields */
 .form-error {
   font-size: 11px;
   color: #ef4444;
 }
 
-/* Red box shown if Supabase returns an error */
 .save-error {
   margin: 0 24px;
   padding: 10px 14px;
@@ -390,7 +327,6 @@ async function save() {
 
 .modal-save:hover { opacity: 0.85; }
 
-/* Smooth fade in/out animation */
 .fade-enter-active,
 .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from,

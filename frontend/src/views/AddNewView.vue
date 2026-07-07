@@ -7,6 +7,10 @@ import ViewSuppliersModal from '../components/modals/ViewSuppliersModal.vue'
 import CategoryModal from '../components/modals/CategoryModal.vue'
 import ViewCategoriesModal from '../components/modals/ViewCategoriesModal.vue'
 import AddClothModal from '../components/modals/AddClothModal.vue'
+import SizeGroupModal from '../components/modals/SizeGroupModal.vue'
+import ViewSizeGroupsModal from '../components/modals/ViewSizeGroupsModal.vue'
+import OwnerModal from '../components/modals/OwnerModal.vue'
+import ViewOwnersModal from '../components/modals/ViewOwnersModal.vue'
 
 const router = useRouter()
 
@@ -18,25 +22,39 @@ const isLight = ref(localStorage.getItem('theme') === 'light')
 // Each object is one row on the page: an icon colour, a title, and a description
 const sections = [
   {
-    key: 'supplier',
-    label: 'Supplier',
-    description: 'Add new supplier and view them',
-    color: '#808080', 
-    icon: '<i class="fa-solid fa-user"></i>' 
+    key: 'cloth-products',
+    label: 'Cloths Products & Other Accessories',
+    description: 'Add new clothing items & other accessories to your inventory',
+    color: '#808080',
+    icon: '<i class="fa-solid fa-shirt"></i>'
   },
   {
     key: 'main-categories',
     label: 'Main Categories',
     description: 'Create and manage your main product categories',
     color: '#808080',
-    icon: '<i class="fa-solid fa-layer-group"></i>' 
+    icon: '<i class="fa-solid fa-layer-group"></i>'
   },
   {
-    key: 'cloth-products',
-    label: 'Cloths Products & Other Accessories',
-    description: 'Add new clothing items & other accessories to your inventory',
-    color: '#808080', 
-    icon: '<i class="fa-solid fa-shirt"></i>' 
+    key: 'sizes',
+    label: 'Sizes',
+    description: 'Create reusable size groups for your products',
+    color: '#808080',
+    icon: '<i class="fa-solid fa-ruler"></i>'
+  },
+  {
+    key: 'owners',
+    label: 'Owners',
+    description: 'Add new owners and view them',
+    color: '#808080',
+    icon: '<i class="fa-solid fa-user-tie"></i>'
+  },
+  {
+    key: 'supplier',
+    label: 'Supplier',
+    description: 'Add new supplier and view them',
+    color: '#808080',
+    icon: '<i class="fa-solid fa-user"></i>'
   },
 ]
 
@@ -73,6 +91,26 @@ const showViewCategoriesModal = computed({
 
 const showAddClothModal = computed({
   get: () => activeModal.value === 'cloth-products',
+  set: (val) => { if (!val) activeModal.value = null },
+})
+
+const showSizeGroupModal = computed({
+  get: () => activeModal.value === 'sizes',
+  set: (val) => { if (!val) activeModal.value = null },
+})
+
+const showViewSizeGroupsModal = computed({
+  get: () => activeModal.value === 'view-sizes',
+  set: (val) => { if (!val) activeModal.value = null },
+})
+
+const showOwnerModal = computed({
+  get: () => activeModal.value === 'owners',
+  set: (val) => { if (!val) activeModal.value = null },
+})
+
+const showViewOwnersModal = computed({
+  get: () => activeModal.value === 'view-owners',
   set: (val) => { if (!val) activeModal.value = null },
 })
 
@@ -129,6 +167,16 @@ const showAddClothModal = computed({
               class="btn-view"
               @click="router.push('/product-list')"
             ><i class="fa-regular fa-eye"></i> View</button>
+            <button
+              v-else-if="section.key === 'sizes'"
+              class="btn-view"
+              @click="openModal('view-sizes')"
+            ><i class="fa-regular fa-eye"></i> View</button>
+            <button
+              v-else-if="section.key === 'owners'"
+              class="btn-view"
+              @click="openModal('view-owners')"
+            ><i class="fa-regular fa-eye"></i> View</button>
             <button class="btn-add" @click="openModal(section.key)">+ Add New</button>
           </div>
         </div>
@@ -142,6 +190,10 @@ const showAddClothModal = computed({
     <CategoryModal         v-model="showCategoryModal"         :isLight="isLight" />
     <ViewCategoriesModal   v-model="showViewCategoriesModal"   :isLight="isLight" />
     <AddClothModal         v-model="showAddClothModal"         :isLight="isLight" />
+    <SizeGroupModal            v-model="showSizeGroupModal"            :isLight="isLight" />
+    <ViewSizeGroupsModal       v-model="showViewSizeGroupsModal"       :isLight="isLight" />
+    <OwnerModal                v-model="showOwnerModal"                :isLight="isLight" />
+    <ViewOwnersModal           v-model="showViewOwnersModal"           :isLight="isLight" />
 
   </div>
 </template>

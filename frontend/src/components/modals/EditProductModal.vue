@@ -8,6 +8,7 @@
 import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
+import { fetchSizesForCategory } from '../../composables/useCategorySizes'
 
 // ── PROPS & EMITS ──
 // product : the full product row to edit (null = modal hidden)
@@ -23,9 +24,9 @@ const emit = defineEmits<{
   (e: 'saved'): void
 }>()
 
-// ── FIXED LISTS ──
-const SIZES  = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'Free Size']
-const OWNERS = ['Obello (O)', 'Shashika (S)', 'Admin (A)']
+// ── SIZES FOR THE SELECTED MAIN CATEGORY ──
+// Loaded from Supabase based on which size groups are active for this category type.
+const availableSizes = ref<string[]>(['Free Size'])
 
 // ── SUPABASE: CATEGORIES ──
 type Category = { id: string; name: string; code: string; type: string }
@@ -52,10 +53,31 @@ const subCategories = computed(() =>
   allCategories.value.filter(c => c.type === selectedType.value)
 )
 
+// Whenever the sub-category changes (including when the product's existing
+// sub-category is loaded below), refresh the size options configured for it
+watch(selectedCategory, async (cat) => {
+  availableSizes.value = await fetchSizesForCategory(cat?.id)
+})
+
 // ── SUPABASE: SUPPLIERS ──
 type Supplier = { id: string; name: string; code: string }
 const supplierList     = ref<Supplier[]>([])
 const selectedSupplier = ref<Supplier | null>(null)
+
+// ── SUPABASE: OWNERS ──
+type Owner = { id: string; name: string; code: string }
+const ownerList     = ref<Owner[]>([])
+const selectedOwner = ref<Owner | null>(null)
+
+async function getOwners() {
+  const { data, error } = await supabase
+    .from('owners')
+    .select('id, name, code')
+    .eq('is_active', true)
+    .order('name')
+  if (error) console.error('Owner fetch error:', error)
+  else ownerList.value = data || []
+}
 
 async function getSuppliers() {
   const { data, error } = await supabase
@@ -77,7 +99,6 @@ const barcode       = ref('')
 const lotNo         = ref('')
 const designNo      = ref('')
 const color         = ref('')
-const owner         = ref('Obello (O)')
 
 // ── IMAGE ──
 const imagePreview    = ref<string | null>(null)
@@ -125,8 +146,7 @@ async function uploadImage(): Promise<string | null> {
 
 // ── SKU ──
 const sku = computed(() => {
-  const ownerMatch = owner.value.match(/\(([A-Z])\)/)
-  const ownerCode  = ownerMatch ? ownerMatch[1] : 'X'
+  const ownerCode  = selectedOwner.value?.code   || 'X'
   const supCode  = selectedSupplier.value?.code  || 'XX'
   const lot      = lotNo.value                   || '00'
   const des      = designNo.value                || '000'
@@ -176,6 +196,7 @@ watch(() => props.modelValue, async (isOpen) => {
   if (isOpen && props.product) {
     await getAllCategories()
     await getSuppliers()
+    await getOwners()
 
     const p = props.product
     name.value          = p.name || ''
@@ -188,7 +209,6 @@ watch(() => props.modelValue, async (isOpen) => {
     lotNo.value         = p.lot_no || ''
     designNo.value      = p.design_no || ''
     color.value         = p.color || ''
-    owner.value         = p.owner || 'Obello (O)'
     size.value          = p.size || ''
     existingImgUrl.value = p.image_url || null
     imagePreview.value   = p.image_url || null
@@ -206,6 +226,10 @@ watch(() => props.modelValue, async (isOpen) => {
     // Match supplier by id
     const supMatch = supplierList.value.find(s => s.id === p.supplier_id)
     selectedSupplier.value = supMatch || null
+
+    // Match owner by name
+    const ownerMatch = ownerList.value.find(o => o.name === p.owner)
+    selectedOwner.value = ownerMatch || null
 
     window.addEventListener('keydown', onKey)
   } else {
@@ -257,7 +281,7 @@ async function save() {
         design_no:      designNo.value,
         color:          color.value,
         supplier_id:    selectedSupplier.value?.id || null,
-        owner:          owner.value,
+        owner:          selectedOwner.value?.name || null,
         sku:            sku.value || null,
         image_url,
       })
@@ -336,7 +360,7 @@ async function save() {
                 <label class="form-label">Size</label>
                 <select v-model="size" class="form-input form-select">
                   <option value="">Select size</option>
-                  <option v-for="s in SIZES" :key="s" :value="s">{{ s }}</option>
+                  <option v-for="s in availableSizes" :key="s" :value="s">{{ s }}</option>
                 </select>
               </div>
 
@@ -411,8 +435,9 @@ async function save() {
                 </div>
                 <div class="form-field">
                   <label class="form-label">Owner</label>
-                  <select v-model="owner" class="form-input form-select">
-                    <option v-for="o in OWNERS" :key="o" :value="o">{{ o }}</option>
+                  <select v-model="selectedOwner" class="form-input form-select">
+                    <option :value="null">Select owner</option>
+                    <option v-for="o in ownerList" :key="o.id" :value="o">{{ o.name }} ({{ o.code }})</option>
                   </select>
                 </div>
               </div>
