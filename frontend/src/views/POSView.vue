@@ -279,10 +279,10 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
         cashier_id: auth.user?.id ?? null,
         customer_id: customerId ?? null,
         subtotal: subtotal.value,
-        discount_percent: discount.value,
+        discount_percent: Number(discount.value) || 0,
         discount_amount: discountAmt.value,
         total: total.value,
-        amount_paid: amountPaid.value,
+        amount_paid: Number(amountPaid.value) || 0,
         balance: balance.value,
         payment_method: paymentMethodCode(payMethod.value),
         printed_receipt: receiptOverride ?? printReceipt.value,
@@ -518,6 +518,7 @@ onMounted(() => {
               type="number"
               min="0"
               max="100"
+              @blur="discount = Number(discount) || 0"
             />
           </div>
           <div class="input-field">
@@ -528,6 +529,7 @@ onMounted(() => {
               placeholder="0"
               type="number"
               min="0"
+              @blur="amountPaid = Number(amountPaid) || 0"
             />
           </div>
         </div>
