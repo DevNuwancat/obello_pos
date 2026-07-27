@@ -199,7 +199,7 @@ const currentPage = ref(1)
 // sortDir  = 'asc' (A→Z, low→high) or 'desc' (Z→A, high→low)
 // Clicking the same column header toggles between asc ↔ desc.
 // Clicking a different column sorts it ascending first.
-type SortKey = 'created_at' | 'name' | 'sku' | 'stock' | 'cost_price' | 'selling_price' | 'super_discount'
+type SortKey = 'created_at' | 'name' | 'sku' | 'stock' | 'cost_price' | 'selling_price' | 'discount'
 const sortKey = ref<SortKey>('created_at')
 const sortDir = ref<'asc' | 'desc'>('desc')
 
@@ -470,10 +470,10 @@ function hideImgPreview() {
 // 17. EXPORT CSV
 // ──────────────────────────────────────────────
 function exportCSV() {
-  const headers = ['ID', 'Date', 'SKU', 'Name', 'Stock', 'Cost', 'Selling', 'Discount%', 'SuperDiscount%', 'Barcode', 'Category', 'Sub Category']
+  const headers = ['ID', 'Date', 'SKU', 'Name', 'Stock', 'Cost', 'Selling', 'Discount', 'Barcode', 'Category', 'Sub Category']
   const rows = products.value.map(p => [
     p.id, fmtDate(p.created_at), p.sku || '', p.name, p.stock,
-    p.cost_price, p.selling_price, p.discount, p.super_discount,
+    p.cost_price, p.selling_price, p.discount,
     p.barcode || '', p.main_category || '', p.sub_category || '',
   ])
   const csv = [headers, ...rows].map(r => r.join(',')).join('\n')
@@ -674,7 +674,7 @@ onMounted(() => {
                 <th class="center sortable" @click="toggleSort('stock')">Stock{{ sortIcon('stock') }}</th>
                 <th class="sortable" @click="toggleSort('cost_price')">Cost (Rs.){{ sortIcon('cost_price') }}</th>
                 <th class="sortable" @click="toggleSort('selling_price')">Selling (Rs.){{ sortIcon('selling_price') }}</th>
-                <th class="sortable" @click="toggleSort('super_discount')">Super Dis. (Rs.){{ sortIcon('super_discount') }}</th>
+                <th class="sortable" @click="toggleSort('discount')">Discount (Rs.){{ sortIcon('discount') }}</th>
                 <th style="text-align:right; padding-right:20px;">Actions</th>
               </tr>
             </thead>
@@ -734,8 +734,8 @@ onMounted(() => {
                 <td class="price-cell">{{ fmt(p.cost_price) }}</td>
                 <td class="price-cell">{{ fmt(p.selling_price) }}</td>
 
-                <!-- Super Discount (shown in green) -->
-                <td class="price-cell super-dis-cell">{{ fmt(p.super_discount) }}</td>
+                <!-- Discount (shown in green) -->
+                <td class="price-cell discount-cell">{{ fmt(p.discount) }}</td>
 
                 <!-- Action buttons -->
                 <td>
@@ -1090,9 +1090,9 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .qty-badge.low { background: var(--red-bg); color: var(--red); }
 .qty-badge.ok  { background: var(--green-bg); color: var(--green); }
 
-/* ── Super Discount column (green) ── */
-.super-dis-cell { text-align: center; }
-.super-dis-value {
+/* ── Discount column (green) ── */
+.discount-cell { text-align: center; }
+.discount-value {
   font-size: 12px; font-weight: 600;
   font-family: 'DM Mono', monospace;
   color: var(--green);
