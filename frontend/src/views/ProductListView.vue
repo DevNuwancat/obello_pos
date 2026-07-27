@@ -286,6 +286,40 @@ const pageInfoText = computed(() => {
   return `Showing ${start}–${end} of ${total}`
 })
 
+// Smart pagination: show only pages around current page (not all pages)
+const paginationPages = computed(() => {
+  const total = totalPages.value
+  const current = currentPage.value
+  const range = 2  // show 2 pages on each side of current page (5 total: -2, -1, current, +1, +2)
+
+  const pages: (number | string)[] = []
+
+  // Add first page
+  if (total <= 7) {
+    // If 7 or fewer pages total, show them all
+    for (let i = 1; i <= total; i++) pages.push(i)
+  } else {
+    // Otherwise, show smart pagination
+    pages.push(1)
+
+    // Show ellipsis if there's a gap
+    if (current - range > 2) pages.push('...')
+
+    // Show pages around current
+    for (let i = Math.max(2, current - range); i <= Math.min(total - 1, current + range); i++) {
+      if (!pages.includes(i)) pages.push(i)
+    }
+
+    // Show ellipsis if there's a gap before last page
+    if (current + range < total - 1) pages.push('...')
+
+    // Add last page
+    if (!pages.includes(total)) pages.push(total)
+  }
+
+  return pages
+})
+
 // ── Stats cards ──
 const statTotal = computed(() => products.value.length)
 const statLow   = computed(() => products.value.filter(p => p.stock <= 1).length)
@@ -734,11 +768,12 @@ onMounted(() => {
             <div class="page-btns">
               <button class="page-btn" :disabled="currentPage === 1" @click="goToPage(currentPage - 1)">‹</button>
               <button
-                v-for="page in totalPages"
-                :key="page"
+                v-for="(page, index) in paginationPages"
+                :key="`${page}-${index}`"
                 class="page-btn"
-                :class="{ active: page === currentPage }"
-                @click="goToPage(page)"
+                :class="{ active: page === currentPage, ellipsis: page === '...' }"
+                :disabled="page === '...'"
+                @click="page !== '...' && goToPage(page as number)"
               >{{ page }}</button>
               <button class="page-btn" :disabled="currentPage >= totalPages" @click="goToPage(currentPage + 1)">›</button>
             </div>
@@ -1146,4 +1181,6 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .page-btn:hover { background: var(--bg); }
 .page-btn.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 .page-btn:disabled { opacity: .35; cursor: default; }
+.page-btn.ellipsis { border-color: transparent; background: transparent; }
+.page-btn.ellipsis:hover { background: transparent; }
 </style>
