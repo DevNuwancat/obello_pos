@@ -330,6 +330,48 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
       showToast('Stock update failed: ' + failed.message)
       return
     }
+
+    // 4. Try to print receipt (if enabled) — call the local print agent running on this computer
+    const shouldPrint = receiptOverride ?? printReceipt.value
+    const isCashSale = paymentMethodCode(payMethod.value).toLowerCase() === 'cash'
+
+    if (shouldPrint) {
+      try {
+        await fetch('http://localhost:8899/print-receipt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            invoice_no: invoiceNo,
+            items: itemRows.map(i => ({
+              product_name: i.product_name,
+              quantity: i.qty,
+              unit_price: i.unit_price,
+            })),
+            payment_method: paymentMethodCode(payMethod.value),
+            subtotal: subtotal.value,
+            discount_amount: discountAmt.value,
+            total: total.value,
+            amount_paid: Number(amountPaid.value) || 0,
+            balance: balance.value,
+            is_cash_sale: isCashSale,
+          }),
+        })
+      } catch (e) {
+        console.warn('Print agent not running or unreachable:', e)
+        showToast('⚠️ Could not reach printer — make sure the print agent is running')
+      }
+    } else if (isCashSale) {
+      // Open drawer even if not printing (for "cash payment, no receipt" scenario)
+      try {
+        await fetch('http://localhost:8899/open-drawer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+      } catch (e) {
+        console.warn('Could not open cash drawer:', e)
+      }
+    }
   } finally {
     checkingOut.value = false
   }

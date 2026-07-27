@@ -1,0 +1,8 @@
+# POS Receipt Printer Agent dependencies
+fastapi==0.109.0           # Web API framework
+uvicorn==0.27.0            # ASGI server to run FastAPI
+python-escpos==3.1         # ESC/POS thermal printer control
+pyusb==1.2.1               # USB communication library (required for printer)
+pillow>=11.0.0             # Image processing for printer (flexible version for compatibility)
+python-multipart==0.0.6    # Multipart form data support
+qrcode==7.4.2              # QR code generation for receipts

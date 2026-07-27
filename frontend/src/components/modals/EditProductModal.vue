@@ -163,7 +163,7 @@ const formattedPrice = computed(() => {
 })
 
 // ── BARCODE GENERATOR ──
-// Finds the highest existing barcode in the products table,
+// Finds the highest existing barcode in the products table (excluding current product),
 // adds 1, and formats as 000-000-000 — always unique
 const generatingBarcode = ref(false)
 
@@ -177,7 +177,12 @@ async function generateBarcode() {
       .not('barcode', 'eq', '')
 
     let maxNum = 0
+    const currentBarcode = props.product?.barcode || '' // Don't conflict with this product's existing barcode
+
     for (const row of data || []) {
+      // Skip the current product's existing barcode
+      if (row.barcode === currentBarcode) continue
+
       const num = parseInt((row.barcode || '').replace(/-/g, ''), 10)
       if (!isNaN(num) && num > maxNum) maxNum = num
     }
