@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+
+# Python virtual environments
+venv/
+__pycache__/
+*.pyc
+
+# PyInstaller build output (the .exe is downloaded from GitHub Actions, not committed)
+print-agent/build/
+print-agent/dist/

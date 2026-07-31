@@ -2,6 +2,21 @@
 
 Your app now prints receipts and opens the cash drawer automatically! Here's what you need to do **once per till computer**.
 
+## For Windows clients: skip Python entirely — use the .exe
+
+You (the developer) build a ready-to-run `ObelloPrintAgent.exe` using GitHub Actions, then send it to the client. They never touch Python or a terminal.
+
+**To build a new .exe (do this on your Mac, whenever `print-agent/app.py` changes):**
+1. Commit and push your changes to `main` (the workflow auto-builds on push), OR
+2. Go to the repo on github.com → **Actions** tab → **"Build Print Agent (Windows)"** → **"Run workflow"** button → wait ~2 minutes
+3. Open the finished run, scroll to **Artifacts**, download `ObelloPrintAgent-windows.zip`
+4. Unzip it — inside is `ObelloPrintAgent.exe`
+5. Put it in the same folder as `print-agent/install-autostart.bat` and `print-agent/uninstall-autostart.bat`, then send that folder to your client (zip it, USB stick, WeTransfer, whatever's easiest)
+
+**What the client does:** see the "Setup for clients (Windows)" section in [README.md](README.md) — it's just: install printer driver once (Zadig), then double-click `install-autostart.bat`.
+
+If you'd rather run everything from source (e.g. testing on your own Mac), keep reading below.
+
 ## Step 1: Install Python
 If you don't have Python installed:
 

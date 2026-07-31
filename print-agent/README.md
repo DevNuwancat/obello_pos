@@ -6,7 +6,23 @@ A local HTTP microservice that handles thermal receipt printer + cash drawer con
 
 Your POS app runs in Chrome (a web browser), and **browsers cannot** access USB devices like thermal printers or cash drawers for security reasons. This small agent runs quietly in the background on each till computer, exposing a simple HTTP API (`localhost:8899`) that the Vue app can call to print and open drawers.
 
-## Setup
+## Setup for clients (Windows) — no Python needed
+
+Your client does **not** need to install Python or use a terminal. Send them these 3 files (built by the "Build Print Agent (Windows)" GitHub Actions workflow — see [SETUP.md](SETUP.md) for how to trigger a build):
+
+- `ObelloPrintAgent.exe`
+- `install-autostart.bat`
+- `uninstall-autostart.bat`
+
+Steps for the client:
+1. Put all 3 files in one folder, e.g. `C:\ObelloPrintAgent\`
+2. Install the printer driver (Zadig) — see step 2 below. One-time only.
+3. Double-click `install-autostart.bat`. This starts the agent immediately AND makes it auto-launch every time Windows boots. A small window will pop up and stay open (that's the agent running) — they can minimize it, never close it.
+4. Test: open a browser and go to `http://localhost:8899/health` — should show `{"status":"ok",...}`
+
+That's the whole setup. No terminal, no `pip install`, no Python.
+
+## Setup for developers (running from source)
 
 ### 1. Install Python (if not already)
 - **Mac**: `brew install python3`

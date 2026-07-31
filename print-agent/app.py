@@ -13,6 +13,7 @@ from escpos.printer import Usb
 from escpos.constants import PAPER_FULL_CUT
 import uvicorn
 import qrcode
+import sys
 from pathlib import Path
 from PIL import Image
 
@@ -25,11 +26,18 @@ SHOP_ADDRESS = "Marapana-South, Ratnapura."
 SHOP_PHONE = "075 314 9175"
 SHOP_EMAIL = "obelloclothing@gmail.com"
 SHOP_SOCIAL_HANDLE = "@obelloclothing"
-RECEIPT_WIDTH_CHARS = 32  # 58mm paper
+RECEIPT_WIDTH_CHARS = 42  # 58mm paper, Font B (condensed)
 PORT = 8899
 
-# Path to the logo file (frontend/public/logo.png, relative to this script)
-LOGO_PATH = Path(__file__).resolve().parent.parent / "frontend" / "public" / "logo.png"
+# Path to the logo file.
+# When running as a normal Python script, it lives at frontend/public/logo.png
+# relative to this file. When PyInstaller bundles this into a single .exe, all
+# "data files" get unpacked into a temp folder pointed to by sys._MEIPASS instead,
+# so we have to look there when running as a frozen exe.
+if getattr(sys, "frozen", False):
+    LOGO_PATH = Path(sys._MEIPASS) / "logo.png"
+else:
+    LOGO_PATH = Path(__file__).resolve().parent.parent / "frontend" / "public" / "logo.png"
 
 # ─────────────────────────────────────────────────────────────────────
 # DATA MODELS (shape of incoming JSON from the Vue app)
@@ -93,7 +101,7 @@ def open_cash_drawer_only():
 
 # ─────────────────────────────────────────────────────────────────────
 # TEXT LAYOUT HELPERS
-# All lines must fit inside RECEIPT_WIDTH_CHARS (32) or they wrap ugly.
+# All lines must fit inside RECEIPT_WIDTH_CHARS (42) or they wrap ugly.
 # ─────────────────────────────────────────────────────────────────────
 
 def money(n: float) -> str:
@@ -148,6 +156,14 @@ def print_receipt_to_printer(
         if LOGO_PATH.exists():
             try:
                 logo = Image.open(LOGO_PATH).convert("RGBA")
+
+                # The source PNG has empty transparent padding baked in around
+                # the wordmark — crop to the actual artwork so it prints tight
+                # against the top of the receipt instead of leaving a gap.
+                bbox = logo.getbbox()
+                if bbox:
+                    logo = logo.crop(bbox)
+
                 # Flatten transparency onto white (thermal printers can't handle alpha)
                 bg = Image.new("RGBA", logo.size, "WHITE")
                 bg.paste(logo, (0, 0), logo)
@@ -170,13 +186,14 @@ def print_receipt_to_printer(
             printer.set(align='center', font='a', width=2, height=2, bold=True)
             printer.text(f"{SHOP_NAME}\n")
 
-        # Tagline — centered manually + left align mode so nothing auto-wraps oddly
-        printer.set(align='left', font='a', width=1, height=1, bold=False)
+        # Everything below uses Font B (condensed) — smaller print, 42 chars/line
+        # instead of Font A's 32. Tagline centered manually so it never auto-wraps oddly.
+        printer.set(align='left', font='b', width=1, height=1, bold=False)
         printer.text(center_line(SHOP_TAGLINE) + "\n")
         printer.text("\n")
 
         # ─── SHOP CONTACT INFO (plain text — thermal printers can't render emoji) ───
-        printer.set(align='left', font='a', width=1, height=1)
+        printer.set(align='left', font='b', width=1, height=1)
         printer.text(center_line(SHOP_ADDRESS) + "\n")
         printer.text(center_line(f"Tel: {SHOP_PHONE}") + "\n")
         printer.text(center_line(SHOP_EMAIL) + "\n")
@@ -191,9 +208,9 @@ def print_receipt_to_printer(
 
         # ─── LINE ITEMS ───
         for item in items:
-            printer.set(bold=True)
+            printer.set(font='b', bold=True)
             printer.text(f"{item.product_name}\n")
-            printer.set(bold=False)
+            printer.set(font='b', bold=False)
 
             line_total = item.quantity * item.unit_price
             qty = item.quantity
@@ -210,9 +227,9 @@ def print_receipt_to_printer(
         if discount_amount > 0:
             printer.text(two_col("Discount", f"-Rs.{money(discount_amount)}") + "\n")
 
-        printer.set(bold=True)
+        printer.set(font='b', bold=True)
         printer.text(two_col("TOTAL", f"Rs.{money(total)}") + "\n")
-        printer.set(bold=False)
+        printer.set(font='b', bold=False)
 
         printer.text(divider + "\n")
         printer.text(two_col("Paid", f"Rs.{money(amount_paid)}") + "\n")
@@ -221,18 +238,18 @@ def print_receipt_to_printer(
         # ─── SAVINGS BOX ───
         if discount_amount > 0:
             printer.text("\n")
-            printer.set(bold=True)
+            printer.set(font='b', bold=True)
             printer.text(center_line(f"* You saved Rs.{money(discount_amount)} *") + "\n")
-            printer.set(bold=False)
+            printer.set(font='b', bold=False)
 
         printer.text("\n")
 
         # ─── FOOTER ───
         printer.text(center_line("7-Day exchange policy") + "\n")
         printer.text(center_line("Receipt & tags required") + "\n")
-        printer.set(bold=True)
+        printer.set(font='b', bold=True)
         printer.text(center_line("Welcome to the obello family!") + "\n")
-        printer.set(bold=False)
+        printer.set(font='b', bold=False)
         printer.text("\n")
 
         # ─── SOCIAL MEDIA ───
@@ -260,7 +277,9 @@ def print_receipt_to_printer(
             printer.text(center_line(f"Ref: {invoice_no}") + "\n")
 
         # ─── CUT PAPER ───
-        printer.text("\n")
+        # Feed extra blank lines so the cut falls below the QR code with
+        # enough of a gap to grab and tear the receipt cleanly.
+        printer.text("\n\n\n\n")
         printer._raw(PAPER_FULL_CUT)
 
         printer.close()
