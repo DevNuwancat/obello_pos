@@ -313,7 +313,6 @@ async function save() {
       v-if="modelValue"
       class="modal-overlay"
       :class="{ light: props.isLight }"
-      @click.self="close"
     >
       <div class="modal-box">
 
