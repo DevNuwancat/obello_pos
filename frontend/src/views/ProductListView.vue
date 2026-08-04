@@ -78,17 +78,37 @@ const products   = ref<Product[]>([])
 const loading    = ref(false)
 const fetchError = ref('')
 
-// Fetch all products from the database
+// Fetch all products from the database.
+// Supabase only ever sends back 1000 rows per request, no matter how many
+// rows the table actually has. So we ask for it "page by page" (1000 rows
+// at a time) and keep asking until a page comes back with fewer than 1000
+// rows — that means we've reached the end of the table.
 async function fetchProducts() {
   loading.value    = true
   fetchError.value = ''
   try {
-    const { data, error } = await supabase
-      .from('products')
-      .select('*')
-      .order('created_at', { ascending: false })
-    if (error) { fetchError.value = error.message; return }
-    products.value = data ?? []
+    const PAGE_SIZE = 1000
+    let allProducts: Product[] = []
+    let from = 0
+
+    while (true) {
+      const to = from + PAGE_SIZE - 1
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(from, to) // e.g. rows 0-999, then 1000-1999, etc.
+
+      if (error) { fetchError.value = error.message; return }
+
+      const page = data ?? []
+      allProducts = allProducts.concat(page)
+
+      if (page.length < PAGE_SIZE) break // fewer rows than we asked for = last page
+      from += PAGE_SIZE
+    }
+
+    products.value = allProducts
   } catch {
     fetchError.value = 'Could not load products.'
   } finally {
