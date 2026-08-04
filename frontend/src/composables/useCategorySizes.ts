@@ -26,16 +26,24 @@ export async function fetchSizesForCategory(categoryId: string | undefined | nul
     return ['Free Size']
   }
 
-  const options: { value: string; sort_order: number }[] = []
+  // IMPORTANT: sort_order is only unique WITHIN a single size group (each
+  // group restarts numbering at 0). So we sort the sizes INSIDE each group
+  // first, then stack the groups one after another — we never sort across
+  // groups together, otherwise a "Standard" S (sort_order 0) and an
+  // "Oversized" 2XL (sort_order 0) would land next to each other and the
+  // two templates would get shuffled into one messy list, e.g.
+  // S, 2XL, M, 3XL, L, 4XL, XL, 5XL instead of S, M, L, XL, 2XL, 3XL, 4XL, 5XL.
+  const values: string[] = []
   for (const row of (data || []) as unknown as LinkRow[]) {
     const group = row.size_groups
     if (!group || !group.is_active) continue
-    options.push(...(group.size_options || []))
+    const groupValues = [...(group.size_options || [])]
+      .sort((a, b) => a.sort_order - b.sort_order)
+      .map(o => o.value)
+    values.push(...groupValues)
   }
 
-  if (options.length === 0) return ['Free Size']
+  if (values.length === 0) return ['Free Size']
 
-  return options
-    .sort((a, b) => a.sort_order - b.sort_order)
-    .map(o => o.value)
+  return values
 }
