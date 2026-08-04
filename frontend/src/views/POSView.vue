@@ -97,8 +97,9 @@ const previewX   = ref(0)
 const previewY   = ref(0)
 
 function showImgPreview(e: MouseEvent, item: any) {
+  if (!item.image_url) return
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  previewImg.value = item.image
+  previewImg.value = item.image_url
   previewX.value   = rect.right + 14
   previewY.value   = rect.top + rect.height / 2 - 110
 }
