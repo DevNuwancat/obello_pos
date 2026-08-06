@@ -14,9 +14,11 @@
 // 1. IMPORTS
 // ──────────────────────────────────────────────
 import { ref, computed } from 'vue'
+import JsBarcode from 'jsbarcode'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { useBarcodePrintStore } from '../store/barcodePrint'
+import obelloLogo from '../assets/obello_mini.png'
 
 
 // ──────────────────────────────────────────────
@@ -32,7 +34,7 @@ const isLight = ref(localStorage.getItem('theme') === 'light')
 // ──────────────────────────────────────────────
 const store = useBarcodePrintStore()
 
-const LABELS_PER_PAGE = 45 // 5 columns x 9 rows, matches the print grid below
+const LABELS_PER_PAGE = 24 // rough estimate: 4 columns x ~6 compact rows per A4 sheet
 
 const statTotalItems   = computed(() => store.queue.length)
 const statTotalLabels  = computed(() => store.totalLabels)
@@ -86,6 +88,42 @@ const printLabelsList = computed(() => {
 
 function fmtPrice(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// ──────────────────────────────────────────────
+// 5b. REAL, SCANNABLE BARCODES
+// JsBarcode draws bars onto an <svg> element for us — it needs a real
+// DOM element to draw into, so we build one in memory (never attached
+// to the page), hand it to JsBarcode, then grab the finished markup
+// as a string with .outerHTML so we can drop it into the template
+// with v-html. Many labels share the same barcode value (qty > 1), so
+// we cache each value's SVG string and only draw it once.
+// ──────────────────────────────────────────────
+const barcodeSvgCache = new Map<string, string>()
+
+function barcodeSvgFor(value: string): string {
+  const key = value || '0000000000'
+  const cached = barcodeSvgCache.get(key)
+  if (cached) return cached
+
+  const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  try {
+    JsBarcode(svgEl, key, {
+      format: 'CODE128',
+      displayValue: false, // we render our own text line below the barcode
+      margin: 0,
+      width: 1.4,
+      height: 40,
+      background: '#ffffff',
+      lineColor: '#000000',
+    })
+  } catch {
+    // JsBarcode throws if the value has characters CODE128 can't encode —
+    // fall back to a blank svg rather than breaking the whole print sheet
+  }
+  const svg = svgEl.outerHTML
+  barcodeSvgCache.set(key, svg)
+  return svg
 }
 
 
@@ -223,44 +261,20 @@ function showToastMsg(msg: string) {
     <!-- ══════════════════════════════════════ -->
     <div class="label-sheet">
       <div v-for="label in printLabelsList" :key="label.key" class="print-label">
-        <div class="label-logo">obello</div>
-        <div class="label-product-name">{{ label.name }}</div>
-        <svg class="label-barcode-svg" viewBox="0 0 120 28" xmlns="http://www.w3.org/2000/svg">
-          <rect x="2"  y="0" width="2" height="28" fill="#111"/>
-          <rect x="6"  y="0" width="1" height="28" fill="#111"/>
-          <rect x="9"  y="0" width="3" height="28" fill="#111"/>
-          <rect x="14" y="0" width="1" height="28" fill="#111"/>
-          <rect x="17" y="0" width="2" height="28" fill="#111"/>
-          <rect x="21" y="0" width="1" height="28" fill="#111"/>
-          <rect x="24" y="0" width="3" height="28" fill="#111"/>
-          <rect x="29" y="0" width="1" height="28" fill="#111"/>
-          <rect x="32" y="0" width="2" height="28" fill="#111"/>
-          <rect x="36" y="0" width="1" height="28" fill="#111"/>
-          <rect x="39" y="0" width="3" height="28" fill="#111"/>
-          <rect x="44" y="0" width="2" height="28" fill="#111"/>
-          <rect x="48" y="0" width="1" height="28" fill="#111"/>
-          <rect x="51" y="0" width="2" height="28" fill="#111"/>
-          <rect x="55" y="0" width="3" height="28" fill="#111"/>
-          <rect x="60" y="0" width="1" height="28" fill="#111"/>
-          <rect x="63" y="0" width="2" height="28" fill="#111"/>
-          <rect x="67" y="0" width="1" height="28" fill="#111"/>
-          <rect x="70" y="0" width="3" height="28" fill="#111"/>
-          <rect x="75" y="0" width="1" height="28" fill="#111"/>
-          <rect x="78" y="0" width="2" height="28" fill="#111"/>
-          <rect x="82" y="0" width="1" height="28" fill="#111"/>
-          <rect x="85" y="0" width="3" height="28" fill="#111"/>
-          <rect x="90" y="0" width="2" height="28" fill="#111"/>
-          <rect x="94" y="0" width="1" height="28" fill="#111"/>
-          <rect x="97" y="0" width="2" height="28" fill="#111"/>
-          <rect x="101" y="0" width="3" height="28" fill="#111"/>
-          <rect x="106" y="0" width="1" height="28" fill="#111"/>
-          <rect x="109" y="0" width="2" height="28" fill="#111"/>
-          <rect x="113" y="0" width="1" height="28" fill="#111"/>
-          <rect x="116" y="0" width="2" height="28" fill="#111"/>
-        </svg>
-        <div class="label-barcode-num">{{ label.barcode || '000-000-000' }}</div>
-        <div class="label-sku">{{ label.sku }}</div>
-        <div class="label-price">Rs {{ fmtPrice(label.selling_price) }}</div>
+        <!-- top-left brand mark -->
+        <img :src="obelloLogo" class="label-logo" alt="obello" />
+
+        <!-- price runs top-to-bottom along the right edge of the label -->
+        <div class="label-price-vert">Rs {{ fmtPrice(label.selling_price) }}</div>
+
+        <!-- everything else stacks centered under the logo, clear of the price strip -->
+        <div class="label-body">
+          <div class="label-product-name">{{ label.name }}</div>
+          <!-- real, scanner-readable CODE128 barcode drawn by JsBarcode -->
+          <div class="label-barcode-wrap" v-html="barcodeSvgFor(label.barcode || '')"></div>
+          <div class="label-barcode-num">{{ label.barcode || '000-000-000' }}</div>
+          <div class="label-sku">{{ label.sku }}</div>
+        </div>
       </div>
     </div>
 
@@ -496,63 +510,89 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .label-sheet { display: none; }
 
 .print-label {
+  position: relative;
   background: #ffffff;
-  border: 1px solid #ddd;
-  border-radius: 4px;
+  border: 1px solid #000;
+  /* height still hugs content, not forced to match width — but we set a
+     min-height so the vertical price text always has room to sit centered
+     instead of overflowing/clipping at the top or bottom. */
+  min-height: 132px;
+  width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 4px;
-  gap: 2px;
+  /* right padding reserves room for the vertical price strip */
+  padding: 5px 13% 5px 4%;
   break-inside: avoid;
+  overflow: hidden;
 }
 
 .label-logo {
+  /* no align-self override — the flex column above already centers
+     children horizontally, so the logo sits centered like the name below */
+  height: 16px;
+  width: auto;
+  display: block;
+}
+
+/* Price reads top-to-bottom along the right edge of the label, centered
+   in the full height of the card. writing-mode flips the text 90°.
+   NOTE: a flex box (align-items:center) does NOT reliably center text
+   once writing-mode is rotated — the flex main/cross axes get confused
+   by the rotation. top:50% + translateY(-50%) centers it correctly
+   regardless of writing-mode, which is why the price looked stuck near
+   the top before. */
+.label-price-vert {
+  position: absolute;
+  top: 50%;
+  right: 3%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 800;
-  font-size: 9px;
-  color: #ffffff;
-  background: #111110;
-  border-radius: 4px;
-  padding: 1px 7px;
-  letter-spacing: -0.4px;
+  font-size: 10px;
+  color: #111110;
+  white-space: nowrap;
+}
+
+.label-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  margin-top: 2px;
+  width: 100%;
 }
 
 .label-product-name {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: 8px;
+  font-size: 11px;
   color: #111110;
   text-align: center;
-  max-width: 95%;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.label-barcode-svg { width: 70px; height: 18px; display: block; }
+/* the actual <svg> here comes from JsBarcode via v-html, so scoped CSS
+   can't reach it directly — :deep() punches through that boundary */
+.label-barcode-wrap { width: 85%; margin-top: 1px; }
+.label-barcode-wrap :deep(svg) { width: 100%; height: 34px; display: block; }
 
 .label-barcode-num {
-  font-size: 6.5px;
+  font-size: 8px;
   font-family: monospace;
   color: #333;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
 }
 
 .label-sku {
-  font-size: 6px;
+  font-size: 7px;
   font-family: 'Space Grotesk', monospace;
   color: #888;
-  letter-spacing: 0.03em;
-}
-
-.label-price {
-  font-family: 'Space Grotesk', sans-serif;
-  font-weight: 700;
-  font-size: 8px;
-  color: #111110;
-  margin-top: 1px;
+  letter-spacing: 0.02em;
 }
 
 
@@ -560,7 +600,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
    PRINT MODE
    ══════════════════════════════════ */
 @media print {
-  @page { size: A4; margin: 8mm; }
+  @page { size: A4; margin: 6mm; }
 
   :deep(.sidebar) { display: none !important; }
   .page-header, .stats-bar, .toolbar, .table-wrap { display: none !important; }
@@ -583,9 +623,15 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 
   .label-sheet {
     display: grid !important;
-    grid-template-columns: repeat(5, 1fr);
-    grid-auto-rows: 28mm;
-    gap: 2mm;
+    grid-template-columns: repeat(4, 1fr);
+    grid-auto-rows: auto; /* each row is only as tall as its label content needs */
+    row-gap: 0;
+    column-gap: 0;
+    /* "stretch" (the grid default) would spread any leftover page height
+       across the rows as extra gaps — align-content: start pins every
+       row flush against the one above it instead, so cards touch exactly
+       at their borders with nothing in between. */
+    align-content: start;
   }
 }
 </style>
