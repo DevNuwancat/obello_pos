@@ -34,7 +34,7 @@ const isLight = ref(localStorage.getItem('theme') === 'light')
 // ──────────────────────────────────────────────
 const store = useBarcodePrintStore()
 
-const LABELS_PER_PAGE = 24 // rough estimate: 4 columns x ~6 compact rows per A4 sheet
+const LABELS_PER_PAGE = 35 // rough estimate: 5 columns x ~7 compact rows per A4 sheet
 
 const statTotalItems   = computed(() => store.queue.length)
 const statTotalLabels  = computed(() => store.totalLabels)
@@ -516,7 +516,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   /* height still hugs content, not forced to match width — but we set a
      min-height so the vertical price text always has room to sit centered
      instead of overflowing/clipping at the top or bottom. */
-  min-height: 132px;
+  min-height: 106px;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -530,7 +530,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .label-logo {
   /* no align-self override — the flex column above already centers
      children horizontally, so the logo sits centered like the name below */
-  height: 32px;
+  height: 26px;
   width: auto;
   display: block;
 }
@@ -550,7 +550,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   writing-mode: vertical-rl;
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 800;
-  font-size: 16px;
+  font-size: 13px;
   color: #111110;
   white-space: nowrap;
 }
@@ -567,7 +567,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .label-product-name {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 700;
-  font-size: 11px;
+  font-size: 9px;
   color: #111110;
   text-align: center;
   max-width: 100%;
@@ -579,17 +579,17 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 /* the actual <svg> here comes from JsBarcode via v-html, so scoped CSS
    can't reach it directly — :deep() punches through that boundary */
 .label-barcode-wrap { width: 85%; margin-top: 1px; }
-.label-barcode-wrap :deep(svg) { width: 100%; height: 34px; display: block; }
+.label-barcode-wrap :deep(svg) { width: 100%; height: 27px; display: block; }
 
 .label-barcode-num {
-  font-size: 8px;
+  font-size: 6.5px;
   font-family: monospace;
   color: #333;
   letter-spacing: 0.05em;
 }
 
 .label-sku {
-  font-size: 10px;
+  font-size: 8px;
   font-weight: 700;
   font-family: 'Space Grotesk', monospace;
   color: #888;
@@ -601,7 +601,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
    PRINT MODE
    ══════════════════════════════════ */
 @media print {
-  @page { size: A4; margin: 6mm; }
+  @page { size: A4 portrait; margin: 6mm; }
 
   :deep(.sidebar) { display: none !important; }
   .page-header, .stats-bar, .toolbar, .table-wrap { display: none !important; }
@@ -624,7 +624,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 
   .label-sheet {
     display: grid !important;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     grid-auto-rows: auto; /* each row is only as tall as its label content needs */
     row-gap: 0;
     column-gap: 0;
