@@ -73,6 +73,14 @@ async function handleLogout() {
       </div>
     </div>
 
+    <!-- Shown only if we've never successfully loaded the profile AND the
+         last attempt failed (e.g. page opened with an expired session).
+         Without this, the user just sees a bare "Cart"-only sidebar with
+         no explanation why the rest of the menu is missing. -->
+    <div v-if="auth.profileError && !auth.profile" class="session-warning">
+      Couldn't verify your account. <button @click="() => window.location.reload()">Refresh</button>
+    </div>
+
     <!-- ── NAV LINKS ── -->
     <nav class="nav">
       <button
@@ -229,6 +237,28 @@ async function handleLogout() {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-top: 2px;
+}
+
+/* ── SESSION WARNING ── */
+.session-warning {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(239,68,68,0.1);
+  border: 1px solid rgba(239,68,68,0.3);
+  color: #ef4444;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.session-warning button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* ── NAV ── */

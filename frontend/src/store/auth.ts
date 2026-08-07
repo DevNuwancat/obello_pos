@@ -6,6 +6,10 @@ export const useAuthStore = defineStore("auth", {
     user: null as any,
     profile: null as any, // name, role etc from public.users
     loading: false,
+    // Set when fetchProfile fails (e.g. expired token). Lets the UI tell the
+    // difference between "this is genuinely a cashier" and "we couldn't
+    // check who you are right now" — see fetchProfile() below.
+    profileError: null as string | null,
   }),
 
   getters: {
@@ -50,9 +54,23 @@ export const useAuthStore = defineStore("auth", {
         .select("*")
         .eq("id", this.user.id)
         .maybeSingle();
-      if (error) console.error("fetchProfile failed:", error.message)
-      console.log("fetchProfile data:", data)
-      this.profile = data;
+
+      if (error) {
+        // BUG FIX: this used to always run `this.profile = data`, even on
+        // error — and on error `data` is null. That wiped out whatever role
+        // the user actually had, and userRole's `?? "cashier"` fallback
+        // below then silently treated ANY logged-in user as a cashier,
+        // collapsing their sidebar to just "Cart". A blip like an expired
+        // token should show as "couldn't check your account", not quietly
+        // demote you. So now: keep the last known-good profile and just
+        // flag the error for the UI to show instead.
+        console.error("fetchProfile failed:", error.message)
+        this.profileError = error.message
+        return
+      }
+
+      this.profileError = null
+      this.profile = data
     },
 
     // Login
