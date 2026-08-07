@@ -56,6 +56,14 @@ async function handleLogout() {
   await auth.logout()
   router.push('/login')
 }
+
+// Used by the "Refresh" button that shows if the profile failed to load.
+// Templates can't always see browser globals like `window` directly, so
+// we wrap it in a function here (same pattern as goTo above) and call
+// that from the template instead.
+function reloadPage() {
+  window.location.reload()
+}
 </script>
 
 <template>
@@ -78,7 +86,7 @@ async function handleLogout() {
          Without this, the user just sees a bare "Cart"-only sidebar with
          no explanation why the rest of the menu is missing. -->
     <div v-if="auth.profileError && !auth.profile" class="session-warning">
-      Couldn't verify your account. <button @click="() => window.location.reload()">Refresh</button>
+      Couldn't verify your account. <button @click="reloadPage">Refresh</button>
     </div>
 
     <!-- ── NAV LINKS ── -->
