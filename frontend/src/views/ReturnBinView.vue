@@ -16,6 +16,7 @@ import Toast from '../components/Toast.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
 import AddReturnModal from '../components/modals/AddReturnModal.vue'
 import { supabase } from '../lib/supabase'
+import { markConnected, markError } from '../lib/connectionStatus'
 
 // ── TYPES ──
 interface ReturnEntry {
@@ -47,10 +48,12 @@ async function fetchReturns() {
       .from('product_returns')
       .select('*')
       .order('returned_at', { ascending: false })
-    if (error) { fetchError.value = error.message; return }
+    if (error) { fetchError.value = error.message; markError(); return }
     returns.value = data ?? []
+    markConnected()
   } catch {
     fetchError.value = 'Could not load the return bin.'
+    markError()
   } finally {
     loading.value = false
   }

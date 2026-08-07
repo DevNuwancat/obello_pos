@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 
 // isLight comes from parent so theme changes work in real time
@@ -35,10 +36,12 @@ async function fetchSuppliers() {
       .select('id, name, code')
       .order('name')
 
-    if (error) { fetchError.value = error.message; return }
+    if (error) { fetchError.value = error.message; markError(); return }
     suppliers.value = data ?? []
+    markConnected()
   } catch {
     fetchError.value = 'Could not load suppliers. Please try again.'
+    markError()
   } finally {
     loading.value = false
   }

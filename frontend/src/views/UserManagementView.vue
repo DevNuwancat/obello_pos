@@ -10,6 +10,7 @@ import Slidebar from '../components/Slidebar.vue'
 import CreateUserModal from '../components/modals/CreateUserModal.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import { markConnected, markError } from '../lib/connectionStatus'
 
 interface UserRow {
   id: string
@@ -34,10 +35,12 @@ async function fetchUsers() {
       .from('users')
       .select('id, email, full_name, role, is_active, created_at')
       .order('created_at', { ascending: false })
-    if (error) { fetchError.value = error.message; return }
+    if (error) { fetchError.value = error.message; markError(); return }
     users.value = data ?? []
+    markConnected()
   } catch {
     fetchError.value = 'Could not load users.'
+    markError()
   } finally {
     loading.value = false
   }

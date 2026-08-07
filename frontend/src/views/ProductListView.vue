@@ -18,6 +18,7 @@ import EditProductModal from '../components/modals/EditProductModal.vue'
 import ImportProductsModal from '../components/modals/ImportProductsModal.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import { markConnected, markError } from '../lib/connectionStatus'
 import { useBarcodePrintStore } from '../store/barcodePrint'
 
 const router = useRouter()
@@ -99,7 +100,7 @@ async function fetchProducts() {
         .order('created_at', { ascending: false })
         .range(from, to) // e.g. rows 0-999, then 1000-1999, etc.
 
-      if (error) { fetchError.value = error.message; return }
+      if (error) { fetchError.value = error.message; markError(); return }
 
       const page = data ?? []
       allProducts = allProducts.concat(page)
@@ -109,8 +110,10 @@ async function fetchProducts() {
     }
 
     products.value = allProducts
+    markConnected()
   } catch {
     fetchError.value = 'Could not load products.'
+    markError()
   } finally {
     loading.value = false
   }

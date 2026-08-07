@@ -16,6 +16,7 @@ import { ref, computed, onMounted } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import { markConnected, markError } from '../lib/connectionStatus'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -95,7 +96,7 @@ async function fetchAll() {
     const { data: balData, error: balError } = await supabase
       .from('pay_later_balances')
       .select('*')
-    if (balError) { fetchError.value = balError.message; return }
+    if (balError) { fetchError.value = balError.message; markError(); return }
     customers.value = balData ?? []
 
     // 2. Every Later Pay bill, so we can show "what did they buy and when"
@@ -106,7 +107,7 @@ async function fetchAll() {
       .eq('status', 'completed')
       .not('customer_id', 'is', null)
       .order('created_at', { ascending: false })
-    if (billError) { fetchError.value = billError.message; return }
+    if (billError) { fetchError.value = billError.message; markError(); return }
     bills.value = billData ?? []
 
     // 3. Items inside those bills (joined with product image)
@@ -116,7 +117,7 @@ async function fetchAll() {
         .from('transaction_items')
         .select('id, transaction_id, product_name, sku, qty, unit_price, discount_label, line_total, products(image_url)')
         .in('transaction_id', billIds)
-      if (itemError) { fetchError.value = itemError.message; return }
+      if (itemError) { fetchError.value = itemError.message; markError(); return }
       billItems.value = (itemData ?? []) as unknown as BillItem[]
     } else {
       billItems.value = []
@@ -127,10 +128,12 @@ async function fetchAll() {
       .from('pay_later_payments')
       .select('*')
       .order('paid_at', { ascending: false })
-    if (payError) { fetchError.value = payError.message; return }
+    if (payError) { fetchError.value = payError.message; markError(); return }
     payments.value = payData ?? []
+    markConnected()
   } catch {
     fetchError.value = 'Could not load Pay Later data.'
+    markError()
   } finally {
     loading.value = false
   }

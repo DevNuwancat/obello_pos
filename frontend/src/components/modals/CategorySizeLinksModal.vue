@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 
 // categoryId/categoryName: which sub-category (e.g. "Oversize T-Shirt") we're
@@ -31,7 +32,7 @@ async function loadGroupsAndLinks() {
       .eq('is_active', true)
       .order('name')
 
-    if (groupsError) { showMsg(groupsError.message); return }
+    if (groupsError) { showMsg(groupsError.message); markError(); return }
     allGroups.value = groups || []
 
     const { data: links, error: linksError } = await supabase
@@ -39,7 +40,7 @@ async function loadGroupsAndLinks() {
       .select('id, size_group_id, is_active')
       .eq('category_id', props.categoryId)
 
-    if (linksError) { showMsg(linksError.message); return }
+    if (linksError) { showMsg(linksError.message); markError(); return }
 
     const activeIds = new Set<string>()
     const rowIds    = new Map<string, string>()
@@ -49,8 +50,10 @@ async function loadGroupsAndLinks() {
     }
     activeLinkIds.value = activeIds
     linkRowIds.value    = rowIds
+    markConnected()
   } catch {
     showMsg('Could not load size groups. Please try again.')
+    markError()
   } finally {
     loading.value = false
   }

@@ -15,6 +15,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import { markConnected, markError } from '../lib/connectionStatus'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -124,7 +125,7 @@ async function fetchReportData() {
       .neq('status', 'void')
       .order('created_at', { ascending: false })
 
-    if (txnError) { fetchError.value = txnError.message; return }
+    if (txnError) { fetchError.value = txnError.message; markError(); return }
     transactions.value = txnData ?? []
 
     // Every item sold that day, with its product image + cost price joined in.
@@ -136,13 +137,15 @@ async function fetchReportData() {
         .from('transaction_items')
         .select('*, products(cost_price, image_url)')
         .in('transaction_id', ids)
-      if (itemError) { fetchError.value = itemError.message; return }
+      if (itemError) { fetchError.value = itemError.message; markError(); return }
       itemRows.value = (itemData ?? []) as unknown as TransactionItemRow[]
     } else {
       itemRows.value = []
     }
+    markConnected()
   } catch {
     fetchError.value = 'Could not load business data for this day.'
+    markError()
   } finally {
     loading.value = false
   }

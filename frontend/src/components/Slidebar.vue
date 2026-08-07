@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../store/auth'
+import { connectionStatus } from '../lib/connectionStatus'
 
 // ── PROPS & EMITS ──
 // Props are values the PARENT sends INTO this component
@@ -31,6 +32,15 @@ const navItems = computed(() => {
   ]
   if (auth.isAdmin) items.push({ key: 'users', label: 'Users', path: '/users' })
   return items
+})
+
+// ── CONNECTION STATUS ──
+// Turns the shared 'connected' / 'checking' / 'error' value into the text
+// shown next to the little coloured dot in the sidebar.
+const connectionLabel = computed(() => {
+  if (connectionStatus.value === 'connected') return 'Connected'
+  if (connectionStatus.value === 'checking')  return 'Checking…'
+  return 'Reconnecting…'
 })
 
 const currentNav  = computed(() => route.name as string)
@@ -78,6 +88,12 @@ function reloadPage() {
           <span class="logo-name">obello</span>
           <span class="logo-sub">POS v2.0</span>
         </div>
+      </div>
+
+      <!-- Connection status pill — green/amber/red dot + label -->
+      <div class="connection-pill" :class="connectionStatus" :title="connectionLabel">
+        <span class="connection-dot"></span>
+        {{ connectionLabel }}
       </div>
     </div>
 
@@ -245,6 +261,50 @@ function reloadPage() {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   margin-top: 2px;
+}
+
+/* ── CONNECTION STATUS PILL ── */
+.connection-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  width: fit-content;
+}
+
+.connection-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+
+/* Green = connected */
+.connection-pill.connected .connection-dot { background: #22c55e; }
+.connection-pill.connected { color: #22c55e; }
+
+/* Amber = actively checking (app just opened, or just recovered from an error) */
+.connection-pill.checking .connection-dot {
+  background: #f59e0b;
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+.connection-pill.checking { color: #f59e0b; }
+
+/* Red = a real connection/load failure just happened somewhere */
+.connection-pill.error .connection-dot { background: #ef4444; }
+.connection-pill.error { color: #ef4444; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
 }
 
 /* ── SESSION WARNING ── */

@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js"
+import { markConnected, markError } from "./connectionStatus"
 
 // Superbase form env. load
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
@@ -34,12 +35,23 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 // so this runs quietly with no visible effect when everything is fine.
 let lastCheck = Date.now()
 
+// This same check now also feeds the shared green/amber/red connection
+// status (see connectionStatus.ts) — if Supabase answers, we're green;
+// if the request itself fails (not just "no session"), we're red.
 function checkSession() {
   lastCheck = Date.now()
-  supabase.auth.getSession().catch((e) => {
-    console.warn('Session refresh check failed:', e)
-  })
+  supabase.auth.getSession()
+    .then(() => markConnected())
+    .catch((e) => {
+      console.warn('Session refresh check failed:', e)
+      markError()
+    })
 }
+
+// Run once immediately (so the connection light turns green right away
+// on app open, instead of staying amber for up to 4 minutes), then keep
+// checking on the timer below.
+checkSession()
 
 // Main safety net: check every 4 minutes, always, regardless of whether
 // the tab is visible/focused. This is what makes it work "like Facebook" —

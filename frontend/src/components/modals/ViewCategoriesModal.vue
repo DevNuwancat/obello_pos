@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 import CategorySizeLinksModal from './CategorySizeLinksModal.vue'
 import { CATEGORY_TYPES } from '../../constants/categoryTypes'
@@ -65,10 +66,12 @@ async function fetchCategories() {
       .select('id, name, code, type, is_active, created_at')
       .order('created_at', { ascending: false })
 
-    if (error) { fetchError.value = error.message; return }
+    if (error) { fetchError.value = error.message; markError(); return }
     categories.value = data ?? []
+    markConnected()
   } catch {
     fetchError.value = 'Could not load categories. Please try again.'
+    markError()
   } finally {
     loading.value = false
   }

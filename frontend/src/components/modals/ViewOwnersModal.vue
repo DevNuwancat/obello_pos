@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 import OwnerModal from './OwnerModal.vue'
 
@@ -35,10 +36,12 @@ async function fetchOwners() {
       .select('id, name, code, is_active, created_at')
       .order('name')
 
-    if (error) { fetchError.value = error.message; return }
+    if (error) { fetchError.value = error.message; markError(); return }
     owners.value = data ?? []
+    markConnected()
   } catch {
     fetchError.value = 'Could not load owners. Please try again.'
+    markError()
   } finally {
     loading.value = false
   }

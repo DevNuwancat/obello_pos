@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 import SizeGroupModal from './SizeGroupModal.vue'
 
@@ -36,15 +37,17 @@ async function fetchGroups() {
       .select('id, name, is_active, created_at, size_options(id, value, sort_order)')
       .order('created_at', { ascending: false })
 
-    if (error) { fetchError.value = error.message; return }
+    if (error) { fetchError.value = error.message; markError(); return }
 
     // Sort each group's options by sort_order so chips display in the order they were added
     groups.value = (data ?? []).map(g => ({
       ...g,
       size_options: [...g.size_options].sort((a, b) => a.sort_order - b.sort_order),
     }))
+    markConnected()
   } catch {
     fetchError.value = 'Could not load size groups. Please try again.'
+    markError()
   } finally {
     loading.value = false
   }
