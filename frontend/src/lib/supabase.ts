@@ -22,37 +22,41 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 // old/expired token and silently fails — nothing seems to happen. A full
 // page refresh fixes it because it grabs a brand-new session from scratch.
 //
-// Fix: every time the tab becomes visible again (you switch back to it,
-// wake the laptop, etc.), we proactively ask Supabase "is my session still
-// good?" — which forces it to renew the token right then if needed, BEFORE
-// you click anything. This runs quietly with no visible effect when
-// everything is fine.
+// Fix: we proactively ask Supabase "is my session still good?" in two ways —
+//   1) An always-running background timer (every 4 minutes, no matter what
+//      the tab is doing). This is the main safety net — it doesn't depend
+//      on any browser event firing correctly.
+//   2) Extra checks when the tab becomes visible again / the window regains
+//      focus, so a stale token gets caught the instant someone comes back,
+//      not up to 4 minutes later.
+// Both call the same function below, so there's only one place this logic
+// lives. getSession() forces Supabase to renew the token if it's expired,
+// so this runs quietly with no visible effect when everything is fine.
 let lastCheck = Date.now()
+
+function checkSession() {
+  lastCheck = Date.now()
+  supabase.auth.getSession().catch((e) => {
+    console.warn('Session refresh check failed:', e)
+  })
+}
+
+// Main safety net: check every 4 minutes, always, regardless of whether
+// the tab is visible/focused. This is what makes it work "like Facebook" —
+// it doesn't wait for you to click back into the tab.
+setInterval(checkSession, 4 * 60 * 1000)
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return
 
-  const idleMs = Date.now() - lastCheck
-  lastCheck = Date.now()
-
   // Only bother re-checking if we've actually been away for a bit —
   // no need to do this on every tiny tab switch.
-  if (idleMs > 60_000) {
-    supabase.auth.getSession().catch((e) => {
-      console.warn('Session refresh check failed:', e)
-    })
-  }
+  if (Date.now() - lastCheck > 60_000) checkSession()
 })
 
 // Some browsers/OS combos fire "focus" without a visibility change
 // (e.g. waking from sleep while the POS tab was already the active one).
 // Covering both events makes this reliable across setups.
 window.addEventListener('focus', () => {
-  const idleMs = Date.now() - lastCheck
-  lastCheck = Date.now()
-  if (idleMs > 60_000) {
-    supabase.auth.getSession().catch((e) => {
-      console.warn('Session refresh check failed:', e)
-    })
-  }
+  if (Date.now() - lastCheck > 60_000) checkSession()
 })
