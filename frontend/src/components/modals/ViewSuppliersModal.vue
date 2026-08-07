@@ -17,6 +17,12 @@ const deletingId  = ref<string | null>(null)  // id of the row being deleted
 const showToast   = ref(false)
 const toastMsg    = ref('')
 
+// ── EDIT ──
+const editingId   = ref<string | null>(null)  // id of the row currently in edit mode
+const editName    = ref('')
+const editCode    = ref('')
+const savingEdit  = ref(false)
+
 // ── FETCH ──
 // Load all suppliers from Supabase every time the modal opens
 async function fetchSuppliers() {
@@ -66,6 +72,53 @@ async function deleteSupplier(id: string) {
   }
 }
 
+// Open edit mode for a row and pre-fill the boxes with its current values
+function startEdit(supplier: Supplier) {
+  editingId.value = supplier.id
+  editName.value  = supplier.name
+  editCode.value  = supplier.code
+}
+
+function cancelEdit() {
+  editingId.value = null
+}
+
+async function saveEdit(id: string) {
+  const name = editName.value.trim()
+  const code = editCode.value.trim()
+
+  if (!name || !code) {
+    toastMsg.value  = 'Name and ID can\'t be empty.'
+    showToast.value = true
+    setTimeout(() => { showToast.value = false }, 3000)
+    return
+  }
+
+  savingEdit.value = true
+
+  try {
+    const { error } = await supabase.from('suppliers').update({ name, code }).eq('id', id)
+
+    if (error) {
+      toastMsg.value  = 'Update failed: ' + error.message
+      showToast.value = true
+    } else {
+      // Update the row in the local list instantly — no need to re-fetch
+      const s = suppliers.value.find(s => s.id === id)
+      if (s) { s.name = name; s.code = code }
+      toastMsg.value  = 'Supplier updated.'
+      showToast.value = true
+      editingId.value = null
+    }
+  } catch {
+    toastMsg.value  = 'Something went wrong. Please try again.'
+    showToast.value = true
+  } finally {
+    savingEdit.value = false
+    setTimeout(() => { showToast.value = false }, 3000)
+  }
+}
+
 function close() { emit('update:modelValue', false) }
 </script>
 
@@ -110,27 +163,84 @@ function close() { emit('update:modelValue', false) }
               <!-- Letter avatar — first letter of supplier name -->
               <div class="avatar">{{ supplier.code}}</div>
 
-              <!-- Name and code -->
-              <div class="supplier-info">
+              <!-- EDIT MODE: two small text boxes instead of plain text -->
+              <div v-if="editingId === supplier.id" class="supplier-info edit-mode">
+                <input
+                  v-model="editName"
+                  class="edit-input"
+                  placeholder="Supplier name"
+                  @keyup.enter="saveEdit(supplier.id)"
+                  @keyup.esc="cancelEdit"
+                />
+                <input
+                  v-model="editCode"
+                  class="edit-input edit-input-code"
+                  placeholder="ID"
+                  @keyup.enter="saveEdit(supplier.id)"
+                  @keyup.esc="cancelEdit"
+                />
+              </div>
+
+              <!-- VIEW MODE: plain name and code -->
+              <div v-else class="supplier-info">
                 <div class="supplier-name">{{ supplier.name }}</div>
                 <div class="supplier-code">{{ supplier.code }}</div>
               </div>
 
-              <!-- Delete button -->
-              <button
-                class="delete-btn"
-                :disabled="deletingId === supplier.id"
-                @click="deleteSupplier(supplier.id)"
-                title="Delete supplier"
-              >
-                <svg v-if="deletingId !== supplier.id" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                  <path d="M10 11v6M14 11v6"/>
-                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-                </svg>
-                <span v-else style="font-size:11px">…</span>
-              </button>
+              <!-- EDIT MODE buttons: Save / Cancel -->
+              <template v-if="editingId === supplier.id">
+                <button
+                  class="save-btn"
+                  :disabled="savingEdit"
+                  @click="saveEdit(supplier.id)"
+                  title="Save changes"
+                >
+                  <span v-if="savingEdit" style="font-size:11px">…</span>
+                  <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </button>
+                <button
+                  class="delete-btn"
+                  :disabled="savingEdit"
+                  @click="cancelEdit"
+                  title="Cancel"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="18" y1="6"  x2="6"  y2="18"/>
+                    <line x1="6"  y1="6"  x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </template>
+
+              <!-- VIEW MODE buttons: Edit / Delete -->
+              <template v-else>
+                <button
+                  class="edit-btn"
+                  :disabled="deletingId === supplier.id"
+                  @click="startEdit(supplier)"
+                  title="Edit supplier"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9"/>
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                  </svg>
+                </button>
+                <button
+                  class="delete-btn"
+                  :disabled="deletingId === supplier.id"
+                  @click="deleteSupplier(supplier.id)"
+                  title="Delete supplier"
+                >
+                  <svg v-if="deletingId !== supplier.id" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                    <path d="M10 11v6M14 11v6"/>
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                  </svg>
+                  <span v-else style="font-size:11px">…</span>
+                </button>
+              </template>
             </div>
           </div>
 
@@ -327,6 +437,70 @@ function close() { emit('update:modelValue', false) }
 }
 
 .delete-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Edit button — same shape as delete, but highlights blue on hover */
+.edit-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.edit-btn:hover:not(:disabled) {
+  color: #3b82f6;
+  background: rgba(59,130,246,0.08);
+  border-color: rgba(59,130,246,0.3);
+}
+
+.edit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Save button — green, shown while a row is in edit mode */
+.save-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid rgba(34,197,94,0.3);
+  background: rgba(34,197,94,0.08);
+  color: #22c55e;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.save-btn:hover:not(:disabled) { opacity: 0.8; }
+.save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Inline edit text boxes */
+.edit-mode {
+  display: flex;
+  gap: 8px;
+}
+
+.edit-input {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-mid);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.edit-input:focus { outline: none; border-color: #3b82f6; }
+
+.edit-input-code { max-width: 70px; flex-shrink: 0; }
 
 /* Scrollbar */
 .modal-body::-webkit-scrollbar       { width: 4px; }

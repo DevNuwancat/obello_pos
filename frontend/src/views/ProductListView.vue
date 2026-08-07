@@ -522,12 +522,28 @@ function showToastMsg(msg: string) {
 // ──────────────────────────────────────────────
 // 19. INIT — load data when the page opens
 // ──────────────────────────────────────────────
+// Template ref to the search <input> itself, so we can call .focus() on it
+// once the page has mounted — same pattern as the barcode input on the
+// Cart page (POSView.vue), which puts the cursor there automatically too.
+const searchInputEl = ref<HTMLInputElement | null>(null)
+
+// Called when Enter is pressed in the search box — which is how a physical
+// barcode scanner signals "done typing" (it types the barcode's digits
+// then sends an Enter key automatically). We highlight (select) the whole
+// text so that scanning the NEXT barcode immediately overwrites it —
+// typing into a text box with everything selected replaces the selection,
+// same as it would if you'd manually selected the text and started typing.
+function selectSearchText() {
+  searchInputEl.value?.select()
+}
+
 onMounted(() => {
   fetchProducts()
   fetchCategories()
   fetchSupplierCount()
   fetchSuppliers()
   fetchOwners()
+  searchInputEl.value?.focus()
 })
 </script>
 
@@ -609,10 +625,12 @@ onMounted(() => {
           <div class="search-box">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
             <input
+              ref="searchInputEl"
               v-model="searchQuery"
               type="text"
               placeholder="Search name, SKU, or barcode…"
               @input="applyFilter"
+              @keydown.enter="selectSearchText"
             />
           </div>
 

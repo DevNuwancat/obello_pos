@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
 import CategorySizeLinksModal from './CategorySizeLinksModal.vue'
+import { CATEGORY_TYPES } from '../../constants/categoryTypes'
 
 const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
@@ -150,6 +151,59 @@ async function deleteCategory(id: string) {
   }
 }
 
+// ── EDIT ──
+const editingId  = ref<string | null>(null)  // id of the row currently in edit mode
+const editName   = ref('')
+const editCode   = ref('')
+const editType   = ref('')
+const savingEdit = ref(false)
+
+// Open edit mode for a row and pre-fill the boxes with its current values
+function startEdit(cat: Category) {
+  editingId.value = cat.id
+  editName.value  = cat.name
+  editCode.value  = cat.code
+  editType.value  = cat.type
+}
+
+function cancelEdit() {
+  editingId.value = null
+}
+
+async function saveEdit(id: string) {
+  const name = editName.value.trim()
+  const code = editCode.value.trim()
+  const type = editType.value
+
+  if (!name || !code || !type) {
+    showMsg('Name, code and type can\'t be empty.')
+    return
+  }
+
+  savingEdit.value = true
+
+  try {
+    const { error } = await supabase
+      .from('categories')
+      .update({ name, code, type })
+      .eq('id', id)
+
+    if (error) {
+      showMsg('Update failed: ' + error.message)
+    } else {
+      // Update the row in the local list instantly — no need to re-fetch
+      const cat = categories.value.find(c => c.id === id)
+      if (cat) { cat.name = name; cat.code = code; cat.type = type }
+      showMsg('Category updated.')
+      editingId.value = null
+    }
+  } catch {
+    showMsg('Something went wrong. Please try again.')
+  } finally {
+    savingEdit.value = false
+  }
+}
+
 // ── MANAGE SIZES ──
 // Clicking a category row opens the size-toggle screen for that specific sub-category
 const showSizesModal   = ref(false)
@@ -241,14 +295,38 @@ function close() {
               v-for="cat in displayList"
               :key="cat.id"
               class="cat-row"
-              title="Click to manage sizes for this category"
-              @click="openSizes(cat)"
+              :title="editingId === cat.id ? '' : 'Click to manage sizes for this category'"
+              @click="editingId === cat.id ? null : openSizes(cat)"
             >
               <!-- Code badge on the left -->
               <div class="code-badge">{{ cat.code }}</div>
 
-              <!-- Name, code, type text -->
-              <div class="cat-info">
+              <!-- EDIT MODE: text boxes + type dropdown instead of plain text -->
+              <div v-if="editingId === cat.id" class="cat-info edit-mode" @click.stop>
+                <div class="edit-row">
+                  <input
+                    v-model="editName"
+                    class="edit-input"
+                    placeholder="Category name"
+                    @keyup.enter="saveEdit(cat.id)"
+                    @keyup.esc="cancelEdit"
+                  />
+                  <input
+                    v-model="editCode"
+                    class="edit-input edit-input-code"
+                    placeholder="Code"
+                    @keyup.enter="saveEdit(cat.id)"
+                    @keyup.esc="cancelEdit"
+                  />
+                </div>
+                <select v-model="editType" class="edit-select">
+                  <option value="" disabled>Select a category type…</option>
+                  <option v-for="t in CATEGORY_TYPES" :key="t" :value="t">{{ t }}</option>
+                </select>
+              </div>
+
+              <!-- VIEW MODE: plain name, code, type text -->
+              <div v-else class="cat-info">
                 <div class="cat-name">{{ cat.name }}</div>
                 <div class="cat-meta">
                   <span class="cat-code">{{ cat.code }}</span>
@@ -257,8 +335,9 @@ function close() {
                 </div>
               </div>
 
-              <!-- Enable / Disable toggle -->
+              <!-- Enable / Disable toggle (hidden while editing — not enough room) -->
               <button
+                v-if="editingId !== cat.id"
                 class="toggle-btn"
                 :class="{ enabled: cat.is_active }"
                 :title="cat.is_active ? 'Click to disable' : 'Click to enable'"
@@ -270,21 +349,60 @@ function close() {
                 <span class="toggle-label">{{ cat.is_active ? 'Active' : 'Off' }}</span>
               </button>
 
-              <!-- Delete button -->
-              <button
-                class="delete-btn"
-                :disabled="deletingId === cat.id"
-                title="Delete category"
-                @click.stop="deleteCategory(cat.id)"
-              >
-                <svg v-if="deletingId !== cat.id" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                  <path d="M10 11v6M14 11v6"/>
-                  <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-                </svg>
-                <span v-else style="font-size:11px">…</span>
-              </button>
+              <!-- EDIT MODE buttons: Save / Cancel -->
+              <template v-if="editingId === cat.id">
+                <button
+                  class="save-btn"
+                  :disabled="savingEdit"
+                  title="Save changes"
+                  @click.stop="saveEdit(cat.id)"
+                >
+                  <span v-if="savingEdit" style="font-size:11px">…</span>
+                  <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                </button>
+                <button
+                  class="delete-btn"
+                  :disabled="savingEdit"
+                  title="Cancel"
+                  @click.stop="cancelEdit"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="18" y1="6"  x2="6"  y2="18"/>
+                    <line x1="6"  y1="6"  x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </template>
+
+              <!-- VIEW MODE buttons: Edit / Delete -->
+              <template v-else>
+                <button
+                  class="edit-btn"
+                  :disabled="deletingId === cat.id"
+                  title="Edit category"
+                  @click.stop="startEdit(cat)"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 20h9"/>
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                  </svg>
+                </button>
+                <button
+                  class="delete-btn"
+                  :disabled="deletingId === cat.id"
+                  title="Delete category"
+                  @click.stop="deleteCategory(cat.id)"
+                >
+                  <svg v-if="deletingId !== cat.id" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                    <path d="M10 11v6M14 11v6"/>
+                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                  </svg>
+                  <span v-else style="font-size:11px">…</span>
+                </button>
+              </template>
 
             </div>
           </div>
@@ -635,6 +753,76 @@ function close() {
 }
 
 .delete-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── EDIT BUTTON ── */
+.edit-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.edit-btn:hover:not(:disabled) {
+  color: #3b82f6;
+  background: rgba(59,130,246,0.08);
+  border-color: rgba(59,130,246,0.3);
+}
+
+.edit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── SAVE BUTTON ── */
+.save-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid rgba(34,197,94,0.3);
+  background: rgba(34,197,94,0.08);
+  color: #22c55e;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.save-btn:hover:not(:disabled) { opacity: 0.8; }
+.save-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── INLINE EDIT FIELDS ── */
+.edit-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.edit-row { display: flex; gap: 8px; }
+
+.edit-input,
+.edit-select {
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-mid);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: inherit;
+}
+
+.edit-input:focus,
+.edit-select:focus { outline: none; border-color: #3b82f6; }
+
+.edit-input-code { max-width: 70px; flex-shrink: 0; }
+.edit-select { width: 100%; }
 
 /* ── SCROLLBAR ── */
 .modal-body::-webkit-scrollbar       { width: 4px; }
