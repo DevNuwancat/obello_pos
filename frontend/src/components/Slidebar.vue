@@ -26,7 +26,6 @@ const navItems = computed(() => {
     { key: 'product-list',   label: 'Product List',   path: '/product-list' },
     { key: 'barcode-print',  label: 'Barcode Print',  path: '/barcode-print' },
     { key: 'today-business', label: 'Today Business', path: '/today-business' },
-    { key: 'owner-earnings', label: 'Owner Earnings', path: '/owner-earnings' },
     { key: 'pay-later',      label: 'Pay Later List', path: '/pay-later' },
     { key: 'return-bin',     label: 'Return Bin',    path: '/return-bin' },
   ]
@@ -93,8 +92,6 @@ async function handleLogout() {
         <svg v-else-if="item.key === 'barcode-print'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path stroke-linecap="round" d="M3 5h2M7 5h2M3 12h2M7 12h2M3 19h2M7 19h2M13 5h2M17 5h2M13 12h2M17 12h2M13 19h2M17 19h2"/></svg>
         <!-- Chart icon -->
         <svg v-else-if="item.key === 'today-business'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-        <!-- Clock icon -->
-        <svg v-else-if="item.key === 'owner-earnings'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
         <!-- Pay Later card icon -->
         <svg v-else-if="item.key === 'pay-later'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
         <!-- Return Bin icon (curved back arrow) -->

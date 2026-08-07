@@ -26,8 +26,6 @@ const router = createRouter({
 
         { path: '/barcode-print', name: 'barcode-print', component: () => import('../views/BarcodePrint.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
-        { path: '/owner-earnings', name: 'owner-earnings', component: () => import('../views/OwnerEarningsView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
-
         { path: '/pay-later', name: 'pay-later', component: () => import('../views/PayLaterView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
         { path: '/return-bin', name: 'return-bin', component: () => import('../views/ReturnBinView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
