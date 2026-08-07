@@ -530,7 +530,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .label-logo {
   /* no align-self override — the flex column above already centers
      children horizontally, so the logo sits centered like the name below */
-  height: 16px;
+  height: 32px;
   width: auto;
   display: block;
 }
@@ -546,11 +546,11 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   position: absolute;
   top: 50%;
   right: 3%;
-  transform: translateY(-50%);
+  transform: translateY(-50%) rotate(180deg);
   writing-mode: vertical-rl;
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 800;
-  font-size: 10px;
+  font-size: 16px;
   color: #111110;
   white-space: nowrap;
 }
@@ -589,7 +589,8 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 }
 
 .label-sku {
-  font-size: 7px;
+  font-size: 10px;
+  font-weight: 700;
   font-family: 'Space Grotesk', monospace;
   color: #888;
   letter-spacing: 0.02em;
