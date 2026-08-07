@@ -34,7 +34,7 @@ const isLight = ref(localStorage.getItem('theme') === 'light')
 // ──────────────────────────────────────────────
 const store = useBarcodePrintStore()
 
-const LABELS_PER_PAGE = 35 // rough estimate: 5 columns x ~7 compact rows per A4 sheet
+const LABELS_PER_PAGE = 50 // 5 columns x ~10 rows fit in A4's ~285mm usable height (297mm - 6mm top/bottom margin)
 
 const statTotalItems   = computed(() => store.queue.length)
 const statTotalLabels  = computed(() => store.totalLabels)
