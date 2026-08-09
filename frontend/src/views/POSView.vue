@@ -32,19 +32,43 @@ const PRODUCTS = ref<Product[]>([])
 const loadingProducts = ref(false)
 const loadError = ref('')
 
+// Supabase only ever sends back 1000 rows per request, no matter how many
+// rows the table actually has. So we ask for it "page by page" (1000 rows
+// at a time) and keep asking until a page comes back with fewer than 1000
+// rows — that means we've reached the end of the table. (Same fix as
+// ProductListView.vue — without this, any product past the first 1000 is
+// invisible to barcode scan / search here even though it exists.)
 async function fetchProducts() {
   loadingProducts.value = true
   loadError.value = ''
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .order('created_at', { ascending: false })
-  if (error) {
-    loadError.value = error.message
-  } else {
-    PRODUCTS.value = data ?? []
+  try {
+    const PAGE_SIZE = 1000
+    let allProducts: Product[] = []
+    let from = 0
+
+    while (true) {
+      const to = from + PAGE_SIZE - 1
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .range(from, to)
+
+      if (error) { loadError.value = error.message; return }
+
+      const page = data ?? []
+      allProducts = allProducts.concat(page)
+
+      if (page.length < PAGE_SIZE) break
+      from += PAGE_SIZE
+    }
+
+    PRODUCTS.value = allProducts
+  } catch {
+    loadError.value = 'Could not load products.'
+  } finally {
+    loadingProducts.value = false
   }
-  loadingProducts.value = false
 }
 
 // discount / super_discount in Supabase are the FINAL Rs. price for that mode
