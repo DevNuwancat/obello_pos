@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://nmbhypfjvsqojyfcjmni.supabase.co/rest/v1/products?select=barcode&limit=1\" -H \"apikey: sb_publishable_1u5zql5mDPbyDPcfrpw9xA_cbU9QDTP\" -H \"Prefer: count=exact\" -I)",
+      "Bash(curl -s \"https://nmbhypfjvsqojyfcjmni.supabase.co/rest/v1/products?select=barcode&order=barcode.desc&limit=5\" -H \"apikey: sb_publishable_1u5zql5mDPbyDPcfrpw9xA_cbU9QDTP\" -H \"Authorization: Bearer sb_publishable_1u5zql5mDPbyDPcfrpw9xA_cbU9QDTP\")",
+      "Bash(curl -s \"https://nmbhypfjvsqojyfcjmni.supabase.co/rest/v1/\" -H \"apikey: sb_publishable_1u5zql5mDPbyDPcfrpw9xA_cbU9QDTP\")",
+      "Bash(python3 -c ' *)",
+      "Bash(osascript -e 'tell application \"Numbers\" to get version')",
+      "Bash(curl -s \"https://nmbhypfjvsqojyfcjmni.supabase.co/rest/v1/suppliers?select=id,name,code&id=eq.5969b7a1-b039-4dc6-90aa-1c90e0a27acf\" -H \"apikey: sb_publishable_1u5zql5mDPbyDPcfrpw9xA_cbU9QDTP\" -H \"Authorization: Bearer sb_publishable_1u5zql5mDPbyDPcfrpw9xA_cbU9QDTP\")"
+    ]
+  }
+}

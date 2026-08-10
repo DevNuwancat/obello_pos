@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
 import { fetchSizesForCategory } from '../../composables/useCategorySizes'
+import { friendlyDbError } from '../../lib/friendlyError'
 
 const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
@@ -80,19 +81,77 @@ async function getOwners() {
     .eq('is_active', true)
     .order('name')
   if (error) console.error('Owner fetch error:', error)
-  else {
-    ownerList.value = data || []
-    // Default to the first owner so the form isn't left blank
-    if (!selectedOwner.value) selectedOwner.value = ownerList.value[0] || null
-  }
+  else ownerList.value = data || []
 }
 
+// ── AUTO-FILL LAST SAVED (Main Category, Sub Category, Supplier, Owner) ──
+// "localStorage" is a tiny notebook the browser keeps on this computer,
+// even after the app is closed and reopened. We use it to remember the
+// last values you picked, so next time we can fill them in for you.
+const LS_ENABLED  = 'obello_autofill_enabled'
+const LS_TYPE     = 'obello_last_main_type'
+const LS_CAT_ID   = 'obello_last_sub_category_id'
+const LS_SUPPLIER_ID = 'obello_last_supplier_id'
+const LS_OWNER_ID = 'obello_last_owner_id'
+
+// The switch itself. Defaults to ON (true) unless the user turned it off before.
+const autoFillEnabled = ref(localStorage.getItem(LS_ENABLED) !== 'false')
+
+// Fill Main Category, Sub Category, Supplier, Owner from what was saved last time.
+// Runs only after categories/suppliers/owners have loaded, so the saved
+// IDs can actually be matched against the dropdown options.
+function applyLastSaved() {
+  const savedCatId = localStorage.getItem(LS_CAT_ID)
+  const match = savedCatId ? allCategories.value.find(c => c.id === savedCatId) : null
+
+  if (match) {
+    // Setting selectedType triggers a watcher that clears selectedCategory
+    // back to null (it does that whenever you switch main category types).
+    // nextTick waits for that watcher to finish running before we set the
+    // category, so our value doesn't get wiped out right after we set it.
+    selectedType.value = match.type
+    nextTick(() => { selectedCategory.value = match })
+  } else {
+    const savedType = localStorage.getItem(LS_TYPE)
+    if (savedType && categoryTypes.value.includes(savedType)) {
+      selectedType.value = savedType
+    }
+  }
+
+  const savedSupplierId = localStorage.getItem(LS_SUPPLIER_ID)
+  if (savedSupplierId) {
+    selectedSupplier.value = supplierList.value.find(s => s.id === savedSupplierId) || null
+  }
+
+  const savedOwnerId = localStorage.getItem(LS_OWNER_ID)
+  if (savedOwnerId) {
+    selectedOwner.value = ownerList.value.find(o => o.id === savedOwnerId) || null
+  }
+  // Fall back to the first owner if nothing was saved yet, so the field isn't left blank.
+  if (!selectedOwner.value) selectedOwner.value = ownerList.value[0] || null
+}
+
+// Clear those 4 fields back to blank (used when the switch is turned OFF)
+function clearAutoFields() {
+  selectedType.value     = ''
+  selectedCategory.value = null
+  selectedSupplier.value = null
+  selectedOwner.value    = null
+}
+
+// When the switch is flipped, remember the choice and update the fields right away
+watch(autoFillEnabled, (val) => {
+  localStorage.setItem(LS_ENABLED, String(val))
+  if (val) applyLastSaved()
+  else clearAutoFields()
+})
+
 // Reload all dropdowns every time the modal opens
-watch(() => props.modelValue, (isOpen) => {
+watch(() => props.modelValue, async (isOpen) => {
   if (isOpen) {
-    getAllCategories()
-    getSuppliers()
-    getOwners()
+    await Promise.all([getAllCategories(), getSuppliers(), getOwners()])
+    if (autoFillEnabled.value) applyLastSaved()
+    else clearAutoFields()
     window.addEventListener('keydown', onKey)
   } else {
     window.removeEventListener('keydown', onKey)
@@ -217,24 +276,35 @@ const formattedPrice = computed(() => {
 // adds 1, and formats as 000-000-000 — always unique
 const generatingBarcode = ref(false)
 
+// Asks the database for the single highest barcode and returns "next number, formatted".
+// IMPORTANT: we ask the database to do the sorting (order + limit 1) instead of
+// downloading every barcode and sorting them ourselves. Supabase only sends back
+// the first 1000 rows of a plain select() — once a shop has more products than
+// that, the old "download everything and find the max" approach could miss the
+// real highest barcode and hand out a number that was already taken.
+// Because barcodes are always fixed-width, zero-padded digits ("000-000-042"),
+// sorting them as *text* gives the exact same order as sorting them as numbers,
+// so this works with a tiny, fast query no matter how many products exist.
+async function nextBarcode(): Promise<string> {
+  const { data } = await supabase
+    .from('products')
+    .select('barcode')
+    .not('barcode', 'is', null)
+    .not('barcode', 'eq', '')
+    .order('barcode', { ascending: false })
+    .limit(1)
+
+  const highest = data?.[0]?.barcode || ''
+  const num = parseInt(highest.replace(/-/g, ''), 10)
+  const next = (isNaN(num) ? 0 : num) + 1
+  const p = String(next).padStart(9, '0')
+  return `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6, 9)}`
+}
+
 async function generateBarcode() {
   generatingBarcode.value = true
   try {
-    const { data } = await supabase
-      .from('products')
-      .select('barcode')
-      .not('barcode', 'is', null)
-      .not('barcode', 'eq', '')
-
-    let maxNum = 0
-    for (const row of data || []) {
-      const num = parseInt((row.barcode || '').replace(/-/g, ''), 10)
-      if (!isNaN(num) && num > maxNum) maxNum = num
-    }
-
-    const next = maxNum + 1
-    const p = String(next).padStart(9, '0')
-    barcode.value = `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6, 9)}`
+    barcode.value = await nextBarcode()
   } finally {
     generatingBarcode.value = false
   }
@@ -250,9 +320,6 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 
 // ── RESET ──
 function resetForm() {
-  selectedType.value      = ''
-  selectedCategory.value  = null
-  selectedSupplier.value  = null
   availableSizes.value    = ['Free Size']
   size.value          = ''
   name.value          = ''
@@ -265,12 +332,16 @@ function resetForm() {
   lotNo.value         = ''
   designNo.value      = ''
   color.value         = ''
-  selectedOwner.value = ownerList.value[0] || null
   imagePreview.value  = null
   imageFile.value     = null
   nameWasEdited.value = false
   showErrors.value    = false
   saveError.value     = ''
+
+  // Main Category / Sub Category / Supplier / Owner:
+  // put back the last-saved values if the switch is ON, otherwise clear them
+  if (autoFillEnabled.value) applyLastSaved()
+  else clearAutoFields()
 }
 
 function close() {
@@ -292,7 +363,7 @@ async function save() {
     // Upload image first (if one was picked)
     const image_url = await uploadImage()
 
-    const { error } = await supabase.from('products').insert({
+    const buildRow = () => ({
       name:           name.value.trim(),
       main_category:  selectedType.value,
       sub_category:   selectedCategory.value?.name,
@@ -312,7 +383,25 @@ async function save() {
       image_url,
     })
 
-    if (error) { saveError.value = error.message; return }
+    let { error } = await supabase.from('products').insert(buildRow())
+
+    // Safety net: if the barcode we generated got taken by someone else in the
+    // split-second between clicking "Gen" and clicking "Add Product" (or the
+    // number was just stale), Postgres rejects it with a "23505" unique-violation
+    // error. Instead of showing that raw error, quietly grab a fresh barcode and
+    // try saving one more time.
+    if (error?.code === '23505' && error.message.includes('barcode')) {
+      barcode.value = await nextBarcode()
+      ;({ error } = await supabase.from('products').insert(buildRow()))
+    }
+
+    if (error) { saveError.value = friendlyDbError(error); return }
+
+    // Remember these 4 picks so next time (if the switch is ON) we can auto-fill them
+    if (selectedType.value)          localStorage.setItem(LS_TYPE, selectedType.value)
+    if (selectedCategory.value?.id)  localStorage.setItem(LS_CAT_ID, selectedCategory.value.id)
+    if (selectedSupplier.value?.id)  localStorage.setItem(LS_SUPPLIER_ID, selectedSupplier.value.id)
+    if (selectedOwner.value?.id)     localStorage.setItem(LS_OWNER_ID, selectedOwner.value.id)
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
   } finally {
@@ -354,47 +443,80 @@ async function save() {
           </div>
         </div>
 
-        <!-- ── BODY: 2 columns ── -->
+        <!-- ── BODY ── -->
         <div class="modal-body">
+
+          <!-- Auto-fill last saved switch — full width, sits above everything else -->
+          <div class="autofill-row">
+            <span class="autofill-label">
+              Auto-fill last saved
+              <span class="form-hint"> · Main Category / Sub Category / Supplier / Owner</span>
+            </span>
+            <button
+              type="button"
+              class="switch"
+              :class="{ on: autoFillEnabled }"
+              role="switch"
+              :aria-checked="autoFillEnabled"
+              @click="autoFillEnabled = !autoFillEnabled"
+            >
+              <span class="switch-knob"></span>
+            </button>
+          </div>
+
+          <!-- Main Category / Sub Category / Supplier / Owner — one full-width row -->
+          <div class="row-4 category-row">
+            <div class="form-field">
+              <label class="form-label">Main Category <span class="req">*</span></label>
+              <select
+                v-model="selectedType"
+                class="form-input form-select"
+                :class="{ error: showErrors && !selectedType }"
+              >
+                <option value="">Select type</option>
+                <option v-for="t in categoryTypes" :key="t" :value="t">{{ t }}</option>
+              </select>
+              <span v-if="showErrors && !selectedType" class="form-error">Required</span>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Sub Category <span class="req">*</span></label>
+              <select
+                v-model="selectedCategory"
+                class="form-input form-select"
+                :class="{ error: showErrors && !selectedCategory }"
+                :disabled="!selectedType"
+              >
+                <option :value="null">{{ selectedType ? 'Select category' : 'Pick main first' }}</option>
+                <option v-for="c in subCategories" :key="c.id" :value="c">
+                  {{ c.code }} – {{ c.name }}
+                </option>
+              </select>
+              <span v-if="showErrors && !selectedCategory" class="form-error">Required</span>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Supplier</label>
+              <select v-model="selectedSupplier" class="form-input form-select">
+                <option :value="null">Select supplier</option>
+                <option v-for="s in supplierList" :key="s.id" :value="s">
+                  {{ s.code }} – {{ s.name }}
+                </option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Owner</label>
+              <select v-model="selectedOwner" class="form-input form-select">
+                <option :value="null">Select owner</option>
+                <option v-for="o in ownerList" :key="o.id" :value="o">{{ o.name }} ({{ o.code }})</option>
+              </select>
+            </div>
+          </div>
+
           <div class="two-col">
 
             <!-- ═══ LEFT COLUMN ═══ -->
             <div class="col">
 
-              <!-- Main Category (type) + Sub Category, then Size -->
-              <div class="row-2">
-                <!-- Left: Main Category Type -->
-                <div class="form-field">
-                  <label class="form-label">Main Category <span class="req">*</span></label>
-                  <select
-                    v-model="selectedType"
-                    class="form-input form-select"
-                    :class="{ error: showErrors && !selectedType }"
-                  >
-                    <option value="">Select type</option>
-                    <option v-for="t in categoryTypes" :key="t" :value="t">{{ t }}</option>
-                  </select>
-                  <span v-if="showErrors && !selectedType" class="form-error">Required</span>
-                </div>
-                <!-- Right: Sub Category filtered by main type -->
-                <div class="form-field">
-                  <label class="form-label">Sub Category <span class="req">*</span></label>
-                  <select
-                    v-model="selectedCategory"
-                    class="form-input form-select"
-                    :class="{ error: showErrors && !selectedCategory }"
-                    :disabled="!selectedType"
-                  >
-                    <option :value="null">{{ selectedType ? 'Select category' : 'Pick main first' }}</option>
-                    <option v-for="c in subCategories" :key="c.id" :value="c">
-                      {{ c.code }} – {{ c.name }}
-                    </option>
-                  </select>
-                  <span v-if="showErrors && !selectedCategory" class="form-error">Required</span>
-                </div>
-              </div>
-
-              <!-- Size — full width below the two category dropdowns -->
+              <!-- Size -->
               <div class="form-field">
                 <label class="form-label">Size</label>
                 <select v-model="size" class="form-input form-select">
@@ -497,26 +619,6 @@ async function save() {
 
             <!-- ═══ RIGHT COLUMN ═══ -->
             <div class="col">
-
-              <!-- Supplier + Owner -->
-              <div class="row-2">
-                <div class="form-field">
-                  <label class="form-label">Supplier</label>
-                  <select v-model="selectedSupplier" class="form-input form-select">
-                    <option :value="null">Select supplier</option>
-                    <option v-for="s in supplierList" :key="s.id" :value="s">
-                      {{ s.code }} – {{ s.name }}
-                    </option>
-                  </select>
-                </div>
-                <div class="form-field">
-                  <label class="form-label">Owner</label>
-                  <select v-model="selectedOwner" class="form-input form-select">
-                    <option :value="null">Select owner</option>
-                    <option v-for="o in ownerList" :key="o.id" :value="o">{{ o.name }} ({{ o.code }})</option>
-                  </select>
-                </div>
-              </div>
 
               <!-- Image upload (optional) -->
               <div class="form-field">
@@ -782,9 +884,62 @@ async function save() {
 
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.row-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+.category-row { margin-bottom: 20px; }
 
 .sub-labels { margin-top: 4px; padding: 0 2px; }
 .sub-labels span { font-size: 10px; color: var(--text-muted); }
+
+/* ── AUTO-FILL SWITCH ── */
+.autofill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  margin-bottom: 16px;
+}
+
+.autofill-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-sub);
+}
+
+.switch {
+  flex-shrink: 0;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border-mid);
+  background: var(--bg-input);
+  padding: 2px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.switch-knob {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.switch.on {
+  background: var(--accent-bg);
+  border-color: var(--accent-bg);
+}
+
+.switch.on .switch-knob {
+  transform: translateX(16px);
+  background: var(--accent-text);
+}
 
 /* ── FORM ── */
 .form-field { display: flex; flex-direction: column; gap: 6px; }

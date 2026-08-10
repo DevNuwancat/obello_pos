@@ -182,7 +182,9 @@ function addToCart(product: Product) {
       showToast(`${product.name} is out of stock`)
       return
     }
-    cart.value.push({ ...product, qty: 1, priceMode: 'discount', activePrice: priceForMode(product, 'discount') })
+    // unshift (not push) puts the new item at the FRONT of the array,
+    // so it renders at the top of the cart list instead of the bottom
+    cart.value.unshift({ ...product, qty: 1, priceMode: 'discount', activePrice: priceForMode(product, 'discount') })
   }
   showToast(`${product.name} added`)
 }

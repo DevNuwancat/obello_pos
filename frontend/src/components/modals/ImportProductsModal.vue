@@ -6,6 +6,11 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { friendlyDbError } from '../../lib/friendlyError'
+// The real sample CSV file, filled in with real product examples.
+// The "?url" suffix tells Vite "don't parse this as data, just give me the
+// final URL this file will be served at" — that's what a download link needs.
+import sampleCsvUrl from '../../assets/obello-products-sample.csv?url'
 
 interface Supplier { id: string; name: string; code: string }
 
@@ -21,27 +26,11 @@ const emit = defineEmits<{
 }>()
 
 // ── SAMPLE CSV ──
-const SAMPLE_HEADERS = [
-  'Name', 'Main Category', 'Sub Category', 'Size',
-  'Cost Price', 'Selling Price', 'Discount %', 'Super Discount %',
-  'Stock', 'Barcode', 'Lot No', 'Design No', 'Color', 'Supplier Code', 'Owner', 'SKU',
-]
-
-const SAMPLE_ROWS = [
-  ['Oversize T-Shirt', 'Clothing & Accessories', 'Oversize T-Shirt', 'L', '800', '1500', '0', '10', '25', '', '12', '04', 'Red', '', 'Obello', ''],
-  ['Knife Set', 'Kitchen Essentials', 'Knife', '', '450', '900', '5', '0', '10', '', '01', '', '', '', 'Obello', ''],
-]
-
-function csvCell(v: string): string {
-  return `"${v.replace(/"/g, '""')}"`
-}
-
+// The "download" attribute forces the browser to save the file under this
+// name, no matter what the actual asset URL looks like.
 function downloadSampleCSV() {
-  const csv = [SAMPLE_HEADERS, ...SAMPLE_ROWS]
-    .map(r => r.map(csvCell).join(','))
-    .join('\n')
   const a = Object.assign(document.createElement('a'), {
-    href: 'data:text/csv,' + encodeURIComponent(csv),
+    href: sampleCsvUrl,
     download: 'obello-products-sample.csv',
   })
   a.click()
@@ -199,38 +188,53 @@ async function startImport() {
   importedCount.value = 0
   importErrors.value  = []
 
-  for (const row of parsedRows.value) {
-    if (row.rowError) continue
+  // "try/finally" guarantees the modal always reaches the 'done' screen,
+  // even if something below throws instead of returning a normal error.
+  // Before this, one unexpected exception (a dropped connection, an
+  // expired login, etc.) would kill the whole loop silently and leave the
+  // modal stuck on "Importing 0 of X…" forever with no way out.
+  try {
+    for (const row of parsedRows.value) {
+      if (row.rowError) continue
 
-    const supplier = row.supplier_code
-      ? props.suppliers.find(s => s.code.toLowerCase() === row.supplier_code.toLowerCase())
-      : undefined
+      // Each row is wrapped in its own try/catch so ONE bad row (duplicate
+      // barcode, network hiccup, whatever) can't stop the rest of the batch
+      // from importing — we just record it as failed and keep going.
+      try {
+        const supplier = row.supplier_code
+          ? props.suppliers.find(s => s.code.toLowerCase() === row.supplier_code.toLowerCase())
+          : undefined
 
-    const { error } = await supabase.from('products').insert({
-      name:           row.name,
-      main_category:  row.main_category,
-      sub_category:   row.sub_category,
-      size:           row.size,
-      cost_price:     row.cost_price,
-      selling_price:  row.selling_price,
-      discount:       row.discount,
-      super_discount: row.super_discount,
-      stock:          row.stock,
-      barcode:        row.barcode,
-      lot_no:         row.lot_no,
-      design_no:      row.design_no,
-      color:          row.color,
-      supplier_id:    supplier?.id || null,
-      owner:          row.owner,
-      sku:            row.sku,
-    })
+        const { error } = await supabase.from('products').insert({
+          name:           row.name,
+          main_category:  row.main_category,
+          sub_category:   row.sub_category,
+          size:           row.size,
+          cost_price:     row.cost_price,
+          selling_price:  row.selling_price,
+          discount:       row.discount,
+          super_discount: row.super_discount,
+          stock:          row.stock,
+          barcode:        row.barcode,
+          lot_no:         row.lot_no,
+          design_no:      row.design_no,
+          color:          row.color,
+          supplier_id:    supplier?.id || null,
+          owner:          row.owner,
+          sku:            row.sku,
+        })
 
-    if (error) importErrors.value.push({ name: row.name, message: error.message })
-    importedCount.value++
+        if (error) importErrors.value.push({ name: row.name, message: friendlyDbError(error) })
+      } catch {
+        importErrors.value.push({ name: row.name, message: 'Could not save this row — check your connection and try again.' })
+      }
+
+      importedCount.value++
+    }
+  } finally {
+    step.value = 'done'
+    emit('imported')
   }
-
-  step.value = 'done'
-  emit('imported')
 }
 
 const progressPct = computed(() => {

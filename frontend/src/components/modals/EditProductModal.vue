@@ -9,6 +9,7 @@ import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
 import { fetchSizesForCategory } from '../../composables/useCategorySizes'
+import { friendlyDbError } from '../../lib/friendlyError'
 
 // ── PROPS & EMITS ──
 // product : the full product row to edit (null = modal hidden)
@@ -167,29 +168,35 @@ const formattedPrice = computed(() => {
 // adds 1, and formats as 000-000-000 — always unique
 const generatingBarcode = ref(false)
 
+// Asks the database for the highest barcode and returns "next number, formatted".
+// We ask the database to sort + limit instead of downloading every barcode and
+// sorting client-side — a plain select() only returns Supabase's first 1000 rows,
+// so once a shop passes that many products, the old approach could miss the real
+// highest barcode and hand out a number that's already taken by someone else.
+// Barcodes are always fixed-width, zero-padded digits ("000-000-042"), so sorting
+// them as text gives the same order as sorting them as numbers.
+async function nextBarcode(): Promise<string> {
+  const currentBarcode = props.product?.barcode || '' // this product may already hold the top spot
+
+  const { data } = await supabase
+    .from('products')
+    .select('barcode')
+    .not('barcode', 'is', null)
+    .not('barcode', 'eq', '')
+    .order('barcode', { ascending: false })
+    .limit(5) // a few extra rows in case #1 turns out to be this same product
+
+  const highest = (data || []).find(row => row.barcode !== currentBarcode)?.barcode || ''
+  const num = parseInt(highest.replace(/-/g, ''), 10)
+  const next = (isNaN(num) ? 0 : num) + 1
+  const p = String(next).padStart(9, '0')
+  return `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6, 9)}`
+}
+
 async function generateBarcode() {
   generatingBarcode.value = true
   try {
-    const { data } = await supabase
-      .from('products')
-      .select('barcode')
-      .not('barcode', 'is', null)
-      .not('barcode', 'eq', '')
-
-    let maxNum = 0
-    const currentBarcode = props.product?.barcode || '' // Don't conflict with this product's existing barcode
-
-    for (const row of data || []) {
-      // Skip the current product's existing barcode
-      if (row.barcode === currentBarcode) continue
-
-      const num = parseInt((row.barcode || '').replace(/-/g, ''), 10)
-      if (!isNaN(num) && num > maxNum) maxNum = num
-    }
-
-    const next = maxNum + 1
-    const p = String(next).padStart(9, '0')
-    barcode.value = `${p.slice(0, 3)}-${p.slice(3, 6)}-${p.slice(6, 9)}`
+    barcode.value = await nextBarcode()
   } finally {
     generatingBarcode.value = false
   }
@@ -269,30 +276,39 @@ async function save() {
   try {
     const image_url = await uploadImage()
 
-    const { error } = await supabase
-      .from('products')
-      .update({
-        name:           name.value.trim(),
-        main_category:  selectedType.value || null,
-        sub_category:   selectedCategory.value?.name || null,
-        size:           size.value,
-        cost_price:     parseFloat(cost.value)          || 0,
-        selling_price:  parseFloat(sellingPrice.value)  || 0,
-        discount:       parseFloat(discount.value)      || 0,
-        super_discount: parseFloat(superDiscount.value) || 0,
-        stock:          parseInt(stock.value) || 0,
-        barcode:        barcode.value || null,
-        lot_no:         lotNo.value,
-        design_no:      designNo.value,
-        color:          color.value,
-        supplier_id:    selectedSupplier.value?.id || null,
-        owner:          selectedOwner.value?.name || null,
-        sku:            sku.value || null,
-        image_url,
-      })
-      .eq('id', props.product.id)
+    const buildRow = () => ({
+      name:           name.value.trim(),
+      main_category:  selectedType.value || null,
+      sub_category:   selectedCategory.value?.name || null,
+      size:           size.value,
+      cost_price:     parseFloat(cost.value)          || 0,
+      selling_price:  parseFloat(sellingPrice.value)  || 0,
+      discount:       parseFloat(discount.value)      || 0,
+      super_discount: parseFloat(superDiscount.value) || 0,
+      stock:          parseInt(stock.value) || 0,
+      barcode:        barcode.value || null,
+      lot_no:         lotNo.value,
+      design_no:      designNo.value,
+      color:          color.value,
+      supplier_id:    selectedSupplier.value?.id || null,
+      owner:          selectedOwner.value?.name || null,
+      sku:            sku.value || null,
+      image_url,
+    })
 
-    if (error) { saveError.value = error.message; return }
+    let { error } = await supabase.from('products').update(buildRow()).eq('id', props.product.id)
+
+    // Safety net: if the barcode we're saving got taken by another product in
+    // the split second between clicking "Gen" and clicking "Save" (or the
+    // number was just stale), Postgres rejects it with a "23505" unique-violation
+    // error. Instead of showing that raw error, quietly grab a fresh barcode and
+    // try saving one more time.
+    if (error?.code === '23505' && error.message.includes('barcode')) {
+      barcode.value = await nextBarcode()
+      ;({ error } = await supabase.from('products').update(buildRow()).eq('id', props.product.id))
+    }
+
+    if (error) { saveError.value = friendlyDbError(error); return }
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
     return
