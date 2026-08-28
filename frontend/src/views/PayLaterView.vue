@@ -17,6 +17,8 @@ import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
 import { markConnected, markError } from '../lib/connectionStatus'
+import { useAuthStore } from '../store/auth'
+import PayLaterCustomerBookModal from '../components/modals/PayLaterCustomerBookModal.vue'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -71,11 +73,24 @@ interface Payment {
   note: string | null
 }
 
+// One correction made to a payment — kept forever as proof of what changed, why, and by whom
+interface PaymentEdit {
+  id: string
+  payment_id: string
+  old_amount: number
+  new_amount: number
+  reason: string
+  edited_at: string
+  edited_by: string | null
+  users: { full_name: string | null } | null
+}
+
 
 // ──────────────────────────────────────────────
 // 3. THEME
 // ──────────────────────────────────────────────
 const isLight = ref(localStorage.getItem('theme') === 'light')
+const auth = useAuthStore()   // who's logged in right now — used to stamp "who corrected this payment"
 
 
 // ──────────────────────────────────────────────
@@ -85,6 +100,7 @@ const customers = ref<CustomerBalance[]>([])
 const bills      = ref<CustomerBill[]>([])
 const billItems  = ref<BillItem[]>([])
 const payments   = ref<Payment[]>([])
+const paymentEdits = ref<PaymentEdit[]>([])
 const loading    = ref(false)
 const fetchError = ref('')
 
@@ -130,6 +146,15 @@ async function fetchAll() {
       .order('paid_at', { ascending: false })
     if (payError) { fetchError.value = payError.message; markError(); return }
     payments.value = payData ?? []
+
+    // 5. Every past correction made to a payment (old amount → new amount + why + who)
+    const { data: editData, error: editError } = await supabase
+      .from('pay_later_payment_edits')
+      .select('*, users(full_name)')
+      .order('edited_at', { ascending: true })
+    if (editError) { fetchError.value = editError.message; markError(); return }
+    paymentEdits.value = (editData ?? []) as unknown as PaymentEdit[]
+
     markConnected()
   } catch {
     fetchError.value = 'Could not load Pay Later data.'
@@ -173,6 +198,17 @@ const paymentsByCustomer = computed(() => {
   return map
 })
 
+// Which corrections belong to which payment — so we can print them under that row
+const editsByPayment = computed(() => {
+  const map = new Map<string, PaymentEdit[]>()
+  for (const e of paymentEdits.value) {
+    const list = map.get(e.payment_id) ?? []
+    list.push(e)
+    map.set(e.payment_id, list)
+  }
+  return map
+})
+
 
 // ──────────────────────────────────────────────
 // 6. STAT CARDS
@@ -203,7 +239,12 @@ function lastActivity(c: CustomerBalance): string | null {
 
 const filteredCustomers = computed(() => {
   let list = customers.value.filter(c => {
-    if (activeTab.value === 'pending') return c.total_owed > 0 || c.total_billed === 0
+    // Contacts with total_billed === 0 have never actually bought anything on
+    // credit — they're just registered contacts (from "+ New Customer" here or
+    // in the Cart's Pay Later checkout). They stay in pay_later_customers and
+    // are still selectable in the Cart's contact list, but this ledger table
+    // only shows people who have real bill/payment activity.
+    if (activeTab.value === 'pending') return c.total_owed > 0
     return c.total_billed > 0 && c.total_owed <= 0
   })
 
@@ -253,6 +294,7 @@ const showPayModal   = ref(false)
 const payCustomer    = ref<CustomerBalance | null>(null)
 const payAmount      = ref('')
 const payNote        = ref('')
+const payMethod      = ref<'cash' | 'card' | 'bank'>('cash')   // how the money actually came in — Cash is the common case, so it's the default
 const payError       = ref('')
 const paySaving      = ref(false)
 
@@ -260,6 +302,7 @@ function openPayModal(c: CustomerBalance) {
   payCustomer.value  = c
   payAmount.value    = ''        // always blank so user must type the actual amount
   payNote.value      = ''
+  payMethod.value    = 'cash'    // reset to the default every time the modal opens
   payError.value     = ''
   showPayModal.value = true
 }
@@ -288,6 +331,8 @@ async function submitPayment() {
     customer_id: payCustomer.value.id,
     amount,
     note: payNote.value || null,
+    payment_method: payMethod.value,
+    received_by: auth.user?.id ?? null,
   })
 
   paySaving.value = false
@@ -300,6 +345,74 @@ async function submitPayment() {
   await fetchAll()
   showToastMsg(wasFullyPaid ? `${name} fully paid off ✓` : `Payment of ${fmtRs(amount)} recorded for ${name}`)
 }
+
+
+// ──────────────────────────────────────────────
+// 9b. EDIT PAYMENT MODAL — fix a mistaken amount, must say why
+// ──────────────────────────────────────────────
+const showEditPayModal = ref(false)
+const editingPayment    = ref<Payment | null>(null)
+const editAmount        = ref('')
+const editReason        = ref('')
+const editError         = ref('')
+const editSaving        = ref(false)
+
+function openEditPayment(p: Payment) {
+  editingPayment.value = p
+  editAmount.value     = String(p.amount)   // start from the current amount, not blank
+  editReason.value     = ''
+  editError.value      = ''
+  showEditPayModal.value = true
+}
+
+function closeEditPayModal() {
+  showEditPayModal.value = false
+  editingPayment.value   = null
+}
+
+async function submitEditPayment() {
+  if (!editingPayment.value) return
+  const newAmount = parseFloat(editAmount.value)
+  const oldAmount = editingPayment.value.amount
+
+  if (!newAmount || newAmount <= 0) { editError.value = 'Enter a valid amount'; return }
+  if (newAmount === oldAmount) { editError.value = 'New amount is the same as before'; return }
+  if (!editReason.value.trim()) { editError.value = 'Please explain why this is being changed'; return }
+
+  editSaving.value = true
+  editError.value  = ''
+
+  // 1. Save the correction to the logbook first — old amount, new amount, reason, who
+  const { error: logError } = await supabase.from('pay_later_payment_edits').insert({
+    payment_id: editingPayment.value.id,
+    old_amount: oldAmount,
+    new_amount: newAmount,
+    reason: editReason.value.trim(),
+    edited_by: auth.user?.id ?? null,
+  })
+  if (logError) { editSaving.value = false; editError.value = logError.message; return }
+
+  // 2. Then actually change the payment's amount to the corrected value
+  const { error: updError } = await supabase
+    .from('pay_later_payments')
+    .update({ amount: newAmount })
+    .eq('id', editingPayment.value.id)
+
+  editSaving.value = false
+
+  if (updError) { editError.value = updError.message; return }
+
+  closeEditPayModal()
+  await fetchAll()
+  showToastMsg('Payment corrected')
+}
+
+
+// ──────────────────────────────────────────────
+// 9c. CUSTOMER BOOK — browse/search/edit/delete EVERY contact, including
+// ones with no purchases yet (hidden from the ledger table above)
+// ──────────────────────────────────────────────
+const showCustomerBook = ref(false)
 
 
 // ──────────────────────────────────────────────
@@ -639,6 +752,10 @@ onMounted(fetchAll)
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
             Export PDF
           </button>
+          <button class="btn btn-outline" @click="showCustomerBook = true" title="Browse, search, edit or delete every Pay Later contact">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            Customer Book
+          </button>
           <button class="btn btn-primary" @click="openAddModal">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
             New Customer
@@ -760,10 +877,23 @@ onMounted(fetchAll)
                       <div class="expand-section">
                         <div class="expand-section-title">Payment History ({{ (paymentsByCustomer.get(c.id) ?? []).length }})</div>
                         <div v-if="(paymentsByCustomer.get(c.id) ?? []).length === 0" class="expand-empty">No payments recorded yet</div>
-                        <div v-for="p in (paymentsByCustomer.get(c.id) ?? [])" :key="p.id" class="payment-row">
-                          <span class="payment-date">{{ fmtDate(p.paid_at) }}</span>
-                          <span class="payment-amount">{{ fmtRs(p.amount) }}</span>
-                          <span v-if="p.note" class="payment-note">{{ p.note }}</span>
+                        <div v-for="p in (paymentsByCustomer.get(c.id) ?? [])" :key="p.id" class="payment-block">
+                          <div class="payment-row">
+                            <span class="payment-date">{{ fmtDate(p.paid_at) }}</span>
+                            <span class="payment-amount">{{ fmtRs(p.amount) }}</span>
+                            <span v-if="p.note" class="payment-note">{{ p.note }}</span>
+                            <button class="btn-edit-payment" title="Correct this payment" @click.stop="openEditPayment(p)">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                              </svg>
+                            </button>
+                          </div>
+                          <!-- Correction trail — every past edit to this payment, in red -->
+                          <div v-for="e in (editsByPayment.get(p.id) ?? [])" :key="e.id" class="payment-edit-row">
+                            {{ fmtRs(e.old_amount) }} → {{ fmtRs(e.new_amount) }} - {{ e.reason }}
+                            <span class="payment-edit-by">· by {{ e.users?.full_name || 'Unknown user' }}</span>
+                          </div>
                         </div>
                       </div>
 
@@ -781,7 +911,7 @@ onMounted(fetchAll)
     <!--    PAY MODAL                          -->
     <!-- ══════════════════════════════════════ -->
     <Transition name="fade">
-      <div v-if="showPayModal" class="modal-overlay" :class="{ light: isLight }" @click.self="closePayModal">
+      <div v-if="showPayModal" class="modal-overlay" :class="{ light: isLight }">
         <div class="modal-box">
           <div class="modal-header">
             <div>
@@ -806,6 +936,14 @@ onMounted(fetchAll)
               <span class="form-hint-text">Outstanding balance: {{ fmtRs(payCustomer?.total_owed ?? 0) }}</span>
             </div>
             <div class="form-field">
+              <label class="form-label">Payment Method</label>
+              <div class="method-chips">
+                <button type="button" class="method-chip" :class="{ active: payMethod === 'cash' }" @click="payMethod = 'cash'">Cash</button>
+                <button type="button" class="method-chip" :class="{ active: payMethod === 'card' }" @click="payMethod = 'card'">Card</button>
+                <button type="button" class="method-chip" :class="{ active: payMethod === 'bank' }" @click="payMethod = 'bank'">Bank</button>
+              </div>
+            </div>
+            <div class="form-field">
               <label class="form-label">Note (optional)</label>
               <input v-model="payNote" class="form-input" placeholder="e.g. Paid in cash at shop" />
             </div>
@@ -823,10 +961,52 @@ onMounted(fetchAll)
     </Transition>
 
     <!-- ══════════════════════════════════════ -->
+    <!--    EDIT PAYMENT MODAL                 -->
+    <!-- ══════════════════════════════════════ -->
+    <Transition name="fade">
+      <div v-if="showEditPayModal" class="modal-overlay" :class="{ light: isLight }">
+        <div class="modal-box">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">Correct Payment</div>
+              <div class="modal-sub">Currently {{ fmtRs(editingPayment?.amount ?? 0) }} · {{ fmtDate(editingPayment?.paid_at ?? null) }}</div>
+            </div>
+            <button class="modal-close" @click="closeEditPayModal">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          <div class="modal-body">
+            <div class="form-field">
+              <label class="form-label">Correct Amount <span class="req">*</span></label>
+              <div class="input-prefix-wrap">
+                <span class="input-prefix">Rs.</span>
+                <input v-model="editAmount" type="number" class="form-input has-prefix" placeholder="Enter the correct amount…" autofocus />
+              </div>
+            </div>
+            <div class="form-field">
+              <label class="form-label">Reason for change <span class="req">*</span></label>
+              <textarea v-model="editReason" class="form-input textarea" rows="3" placeholder="e.g. Cashier typed the wrong amount" />
+              <span class="form-hint-text">This is saved permanently and shown in the payment history.</span>
+            </div>
+            <div v-if="editError" class="save-error">{{ editError }}</div>
+          </div>
+
+          <div class="modal-footer">
+            <button class="modal-cancel" :disabled="editSaving" @click="closeEditPayModal">Cancel</button>
+            <button class="modal-save" :disabled="editSaving" @click="submitEditPayment">
+              {{ editSaving ? 'Saving…' : 'Save Correction' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- ══════════════════════════════════════ -->
     <!--    ADD NEW CUSTOMER MODAL             -->
     <!-- ══════════════════════════════════════ -->
     <Transition name="fade">
-      <div v-if="showAddModal" class="modal-overlay" :class="{ light: isLight }" @click.self="showAddModal = false">
+      <div v-if="showAddModal" class="modal-overlay" :class="{ light: isLight }">
         <div class="modal-box">
           <div class="modal-header">
             <div>
@@ -868,6 +1048,15 @@ onMounted(fetchAll)
         </div>
       </div>
     </Transition>
+
+    <!-- ══════════════════════════════════════ -->
+    <!--    CUSTOMER BOOK — all contacts       -->
+    <!-- ══════════════════════════════════════ -->
+    <PayLaterCustomerBookModal
+      v-model="showCustomerBook"
+      :isLight="isLight"
+      @changed="fetchAll"
+    />
 
     <!-- ── TOAST ── -->
     <Toast :message="toastMsg" :show="toastVisible" />
@@ -1071,10 +1260,27 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .discount-badge.label-super    { border-color: #8b5cf6; background: rgba(139,92,246,0.12); color: #8b5cf6; }
 .discount-badge.label-original { border-color: var(--border); background: var(--surface); color: var(--text-sub); }
 
-.payment-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; font-size: 12.5px; }
+.payment-block  { padding: 2px 0; }
+.payment-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; font-size: 12.5px; }
 .payment-date   { color: var(--text-sub); width: 100px; flex-shrink: 0; }
 .payment-amount { font-weight: 700; color: var(--green); font-family: 'DM Mono', monospace; width: 100px; }
-.payment-note   { color: var(--text-muted); font-size: 11.5px; }
+.payment-note   { color: var(--text-muted); font-size: 11.5px; flex: 1; }
+
+.btn-edit-payment {
+  width: 22px; height: 22px; border-radius: 6px; margin-left: auto; flex-shrink: 0;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-muted); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color .15s, background .15s, border-color .15s;
+}
+.btn-edit-payment:hover { color: var(--text); background: var(--surface2); border-color: var(--text-muted); }
+
+/* Correction trail — permanent proof of what a payment used to be, why, and who did it */
+.payment-edit-row {
+  font-size: 11.5px; color: var(--red); font-family: 'DM Mono', monospace;
+  padding: 3px 0 3px 112px;
+}
+.payment-edit-by { color: var(--text-muted); font-style: italic; }
 
 
 /* ══════════════════════════════════
@@ -1131,6 +1337,16 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .has-prefix { padding-left: 30px; }
 
 .pay-amount-label-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }
+
+.method-chips { display: flex; gap: 8px; }
+.method-chip {
+  flex: 1; padding: 9px 0; border-radius: 8px;
+  border: 1px solid var(--border-mid); background: var(--bg-card);
+  color: var(--text-sub); font-size: 12.5px; font-weight: 600;
+  font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all .15s;
+}
+.method-chip:hover { background: var(--bg-hover); }
+.method-chip.active { border-color: var(--accent-bg); background: var(--accent-bg); color: var(--accent-text); }
 
 .btn-pay-full {
   padding: 4px 10px; border-radius: 6px; border: none;

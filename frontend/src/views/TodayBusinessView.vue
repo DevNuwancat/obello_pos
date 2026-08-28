@@ -57,6 +57,49 @@ interface TransactionItemRow {
   products: { cost_price: number; image_url: string | null } | null
 }
 
+// One Pay Later payment received that day — money coming IN against an
+// old credit balance, not a new sale. Shown as its own row in the table.
+interface PayLaterPaymentRow {
+  id: string
+  customer_id: string
+  amount: number
+  paid_at: string
+  note: string | null
+  payment_method: string
+  received_by: string | null
+  pay_later_customers: { name: string } | null
+  users: { full_name: string | null } | null
+  // How much of THIS payment counts as Cost of Goods, computed "cost-first":
+  // across everything this customer has ever paid toward their Pay Later
+  // items, cost is paid back before any of it is counted as profit. Once the
+  // item's cost is fully recovered, every Rs. after that is pure profit.
+  // Example: bill total Rs. 1000, item cost Rs. 800.
+  //   Payment 1: Rs. 600 paid → all Rs. 600 is cost (cost not covered yet) → profit Rs. 0
+  //   Payment 2: Rs. 400 paid → only Rs. 200 was left to cover cost → cost Rs. 200, profit Rs. 200
+  costPortion: number
+}
+
+// A row the TABLE actually renders — either a real sale (from "transactions")
+// or a Pay Later payment (from "pay_later_payments"), normalised to one shape
+// so both can sit in the same list, sorted by time and filtered together.
+interface DisplayRow {
+  kind: 'sale' | 'pay_later_paid'
+  id: string
+  time: string
+  invoiceLabel: string
+  cashierName: string
+  itemsCount: number | null       // null = not applicable (payments have no items)
+  paymentMethod: string
+  statusKind: string               // css class: 'completed' | 'refunded' | 'void' | 'pay_later_paid'
+  statusLabel: string
+  printed: boolean | null          // null = not applicable
+  discountPercent: number | null   // null = not applicable
+  subtotal: number | null          // null = not applicable
+  discountAmount: number | null    // null = not applicable
+  total: number
+  note: string | null              // payments only
+}
+
 
 // ──────────────────────────────────────────────
 // 3. THEME — same pattern as ProductListView
@@ -95,10 +138,11 @@ const selectedDateLabel = computed(() => {
 // ──────────────────────────────────────────────
 // 4. TRANSACTIONS from Supabase, for whichever date is selected
 // ──────────────────────────────────────────────
-const transactions = ref<Transaction[]>([])
-const itemRows      = ref<TransactionItemRow[]>([])
-const loading       = ref(false)
-const fetchError    = ref('')
+const transactions     = ref<Transaction[]>([])
+const itemRows         = ref<TransactionItemRow[]>([])
+const payLaterPayments = ref<PayLaterPaymentRow[]>([])
+const loading          = ref(false)
+const fetchError       = ref('')
 
 // Midnight → midnight tomorrow for a given "YYYY-MM-DD" date, in local time
 function dayRange(dateStr: string) {
@@ -142,6 +186,82 @@ async function fetchReportData() {
     } else {
       itemRows.value = []
     }
+
+    // Every Pay Later payment received on this day — real money coming in
+    // against an old balance, shown as its own "Pay Later Paid" row.
+    const { data: payData, error: payError } = await supabase
+      .from('pay_later_payments')
+      .select('*, pay_later_customers(name), users(full_name)')
+      .gte('paid_at', start)
+      .lte('paid_at', end)
+      .order('paid_at', { ascending: false })
+    if (payError) { fetchError.value = payError.message; markError(); return }
+    const rawPayRows = (payData ?? []) as unknown as Omit<PayLaterPaymentRow, 'costPortion'>[]
+
+    if (rawPayRows.length > 0) {
+      const customerIds = [...new Set(rawPayRows.map(p => p.customer_id))]
+
+      // Cost basis: total item cost across ALL of these customers' Pay Later
+      // bills, ever — not just today's. This is the cost that needs to be
+      // "paid back" before their payments start counting as profit.
+      const { data: custTxns, error: custTxnsErr } = await supabase
+        .from('transactions')
+        .select('id, customer_id')
+        .in('customer_id', customerIds)
+        .eq('payment_method', 'later_pay')
+        .eq('status', 'completed')
+      if (custTxnsErr) { fetchError.value = custTxnsErr.message; markError(); return }
+
+      const custByTxnId = new Map<string, string>()
+      for (const t of custTxns ?? []) custByTxnId.set(t.id, t.customer_id)
+      const allTxnIds = (custTxns ?? []).map(t => t.id)
+
+      const costByCustomer = new Map<string, number>()
+      if (allTxnIds.length > 0) {
+        const { data: costItems, error: costItemsErr } = await supabase
+          .from('transaction_items')
+          .select('transaction_id, qty, products(cost_price)')
+          .in('transaction_id', allTxnIds)
+        if (costItemsErr) { fetchError.value = costItemsErr.message; markError(); return }
+        for (const row of (costItems ?? []) as any[]) {
+          const custId = custByTxnId.get(row.transaction_id)
+          if (!custId) continue
+          const cost = (row.products?.cost_price ?? 0) * row.qty
+          costByCustomer.set(custId, (costByCustomer.get(custId) ?? 0) + cost)
+        }
+      }
+
+      // Every payment these customers have EVER made, oldest first, so we
+      // know how much cost was already recovered before today's payment —
+      // that "before" total is what decides how much of today's Rs. is cost
+      // vs. profit.
+      const { data: allPays, error: allPaysErr } = await supabase
+        .from('pay_later_payments')
+        .select('id, customer_id, amount, paid_at')
+        .in('customer_id', customerIds)
+        .order('paid_at', { ascending: true })
+      if (allPaysErr) { fetchError.value = allPaysErr.message; markError(); return }
+
+      const cumulativeBeforeByPaymentId = new Map<string, number>()
+      const runningByCustomer = new Map<string, number>()
+      for (const p of allPays ?? []) {
+        const before = runningByCustomer.get(p.customer_id) ?? 0
+        cumulativeBeforeByPaymentId.set(p.id, before)
+        runningByCustomer.set(p.customer_id, before + p.amount)
+      }
+
+      payLaterPayments.value = rawPayRows.map(p => {
+        const cost   = costByCustomer.get(p.customer_id) ?? 0
+        const before = cumulativeBeforeByPaymentId.get(p.id) ?? 0
+        const after  = before + p.amount
+        const costRecognizedBefore = Math.min(before, cost)
+        const costRecognizedAfter  = Math.min(after, cost)
+        return { ...p, costPortion: costRecognizedAfter - costRecognizedBefore }
+      })
+    } else {
+      payLaterPayments.value = []
+    }
+
     markConnected()
   } catch {
     fetchError.value = 'Could not load business data for this day.'
@@ -166,16 +286,25 @@ async function fetchAvailableDates() {
   const fourMonthsAgo = new Date()
   fourMonthsAgo.setMonth(fourMonthsAgo.getMonth() - 4)
 
-  const { data, error } = await supabase
+  const { data: txnDates, error: txnErr } = await supabase
     .from('transactions')
     .select('created_at')
     .gte('created_at', fourMonthsAgo.toISOString())
     .neq('status', 'void')
+  if (txnErr) { console.error('Available dates fetch error:', txnErr); return }
 
-  if (error) { console.error('Available dates fetch error:', error); return }
+  // A day can have a Pay Later payment with no NEW sale on it — that day
+  // still needs to be pickable on the calendar, or the payment would be
+  // stuck invisible with no way to view it.
+  const { data: payDates, error: payErr } = await supabase
+    .from('pay_later_payments')
+    .select('paid_at')
+    .gte('paid_at', fourMonthsAgo.toISOString())
+  if (payErr) { console.error('Available dates fetch error:', payErr); return }
 
   const set = new Set<string>()
-  for (const row of data ?? []) set.add(toDateStr(new Date(row.created_at)))
+  for (const row of txnDates ?? []) set.add(toDateStr(new Date(row.created_at)))
+  for (const row of payDates ?? []) set.add(toDateStr(new Date(row.paid_at)))
   availableDates.value = set
 }
 
@@ -262,18 +391,24 @@ const laterPayTransactions = computed(() =>
 // ──────────────────────────────────────────────
 // 6. STAT CARD NUMBERS
 // ──────────────────────────────────────────────
-// Today's Sales — total Rs. taken in (cash + card + bank only)
+// Today's Sales — cash/card/bank sales, PLUS every Pay Later payment
+// received today. A Pay Later payment is real money in the register today,
+// even though the original bill was sold on credit some other day.
 const todaysSalesTotal = computed(() =>
-  saleTransactions.value.reduce((sum, t) => sum + t.total, 0)
+  saleTransactions.value.reduce((sum, t) => sum + t.total, 0) +
+  payLaterPayments.value.reduce((sum, p) => sum + p.amount, 0)
 )
 
-// Cost of Goods Sold — what those sold items cost YOU (cost_price), not what
-// the customer paid. Only counts items belonging to non-Later-Pay sales.
+// Cost of Goods Sold — cost price of items behind today's own sales, PLUS
+// the "cost-first" portion of today's Pay Later payments (see costPortion
+// on PayLaterPaymentRow above for exactly how that split is worked out).
 const todaysCostTotal = computed(() => {
   const saleIds = new Set(saleTransactions.value.map(t => t.id))
-  return itemRows.value
+  const saleCost = itemRows.value
     .filter(row => saleIds.has(row.transaction_id))
     .reduce((sum, row) => sum + (row.products?.cost_price ?? 0) * row.qty, 0)
+  const payLaterCost = payLaterPayments.value.reduce((sum, p) => sum + p.costPortion, 0)
+  return saleCost + payLaterCost
 })
 
 // Profit — what's left after cost is taken out of sales
@@ -286,21 +421,6 @@ const todaysSalesCount = computed(() => saleTransactions.value.length)
 const laterPayCount = computed(() => laterPayTransactions.value.length)
 const laterPayTotal = computed(() => laterPayTransactions.value.reduce((sum, t) => sum + t.total, 0))
 
-
-// ──────────────────────────────────────────────
-// 7. PAYMENT METHOD FILTER (for the table only)
-// ──────────────────────────────────────────────
-// 'all_no_later' / 'all_with_later' = the two "All Payments" modes, otherwise
-// a specific method: 'cash' | 'card' | 'bank' | 'later_pay'
-const paymentFilter = ref('all_no_later')
-
-const filteredTransactions = computed(() => {
-  if (paymentFilter.value === 'all_no_later') {
-    return transactions.value.filter(t => t.payment_method !== 'later_pay')
-  }
-  if (paymentFilter.value === 'all_with_later') return transactions.value
-  return transactions.value.filter(t => t.payment_method === paymentFilter.value)
-})
 
 // How many items were sold in a given transaction (for the table's "Items" column)
 const itemCountByTxn = computed(() => {
@@ -321,6 +441,70 @@ const itemsByTxn = computed(() => {
     map.set(row.transaction_id, list)
   }
   return map
+})
+
+
+// ──────────────────────────────────────────────
+// 6b. DISPLAY ROWS — sales AND Pay Later payments, normalised into one shape
+//     so the table can show both, sorted by time together. Note: this does
+//     NOT affect the Sales/Cost/Profit stat cards above — those still read
+//     straight from `transactions` only, so a Pay Later payment never gets
+//     double-counted as a "new sale".
+// ──────────────────────────────────────────────
+const displayRows = computed<DisplayRow[]>(() => {
+  const saleRows: DisplayRow[] = transactions.value.map(t => ({
+    kind: 'sale',
+    id: t.id,
+    time: t.created_at,
+    invoiceLabel: t.invoice_no,
+    cashierName: t.users?.full_name || '—',
+    itemsCount: itemCountByTxn.value.get(t.id) ?? 0,
+    paymentMethod: t.payment_method,
+    statusKind: t.status,
+    statusLabel: t.status,
+    printed: t.printed_receipt,
+    discountPercent: t.discount_percent,
+    subtotal: t.subtotal,
+    discountAmount: t.discount_amount,
+    total: t.total,
+    note: null,
+  }))
+
+  const paymentRows: DisplayRow[] = payLaterPayments.value.map(p => ({
+    kind: 'pay_later_paid',
+    id: p.id,
+    time: p.paid_at,
+    invoiceLabel: `Pay Later · ${p.pay_later_customers?.name || 'Unknown customer'}`,
+    cashierName: p.users?.full_name || '—',
+    itemsCount: null,
+    paymentMethod: p.payment_method,
+    statusKind: 'pay_later_paid',
+    statusLabel: 'Pay Later Paid',
+    printed: null,
+    discountPercent: null,
+    subtotal: null,
+    discountAmount: null,
+    total: p.amount,
+    note: p.note,
+  }))
+
+  return [...saleRows, ...paymentRows].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+})
+
+
+// ──────────────────────────────────────────────
+// 7. PAYMENT METHOD FILTER (for the table only)
+// ──────────────────────────────────────────────
+// 'all_no_later' / 'all_with_later' = the two "All Payments" modes, otherwise
+// a specific method: 'cash' | 'card' | 'bank' | 'later_pay'
+const paymentFilter = ref('all_no_later')
+
+const filteredTransactions = computed(() => {
+  if (paymentFilter.value === 'all_no_later') {
+    return displayRows.value.filter(r => r.paymentMethod !== 'later_pay')
+  }
+  if (paymentFilter.value === 'all_with_later') return displayRows.value
+  return displayRows.value.filter(r => r.paymentMethod === paymentFilter.value)
 })
 
 
@@ -396,28 +580,29 @@ function exportCSV() {
 
   const headers = ['Invoice No', 'Time', 'Cashier', 'Payment', 'Status', 'Printed', 'Bill Discount %', 'Items', 'Subtotal', 'Discount Rs.', 'Total']
   const rows = filteredTransactions.value.map(t => [
-    t.invoice_no,
-    fmtTime(t.created_at),
-    t.users?.full_name || '—',
-    paymentLabel(t.payment_method),
-    t.status,
-    t.printed_receipt ? 'Yes' : 'No',
-    t.discount_percent > 0 ? `${t.discount_percent}%` : '—',
-    String(itemCountByTxn.value.get(t.id) ?? 0),
-    t.subtotal.toFixed(2),
-    t.discount_amount.toFixed(2),
+    t.invoiceLabel,
+    fmtTime(t.time),
+    t.cashierName,
+    paymentLabel(t.paymentMethod),
+    t.statusLabel,
+    t.printed === null ? '—' : (t.printed ? 'Yes' : 'No'),
+    t.discountPercent && t.discountPercent > 0 ? `${t.discountPercent}%` : '—',
+    t.itemsCount === null ? '—' : String(t.itemsCount),
+    t.subtotal === null ? '—' : t.subtotal.toFixed(2),
+    t.discountAmount === null ? '—' : t.discountAmount.toFixed(2),
     t.total.toFixed(2),
   ])
 
   // Item-by-item breakdown — every product sold today, one row each,
-  // tagged with which invoice it belongs to.
+  // tagged with which invoice it belongs to. Pay Later payments have no
+  // items, so they naturally don't add anything here.
   const itemSection = [
     [],
     ['Item-by-Item Breakdown'],
     ['Invoice No', 'Product Name', 'SKU', 'Price Mode', 'Qty', 'Unit Price', 'Line Total'],
   ]
   const filteredIds = new Set(filteredTransactions.value.map(t => t.id))
-  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoice_no]))
+  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoiceLabel]))
   const itemRowsOut = itemRows.value
     .filter(row => filteredIds.has(row.transaction_id))
     .map(row => [
@@ -510,12 +695,12 @@ function exportPDF() {
 
   const txnHead = [['Time', 'Invoice No', 'Cashier', 'Payment', 'Status', 'Items', 'Total (Rs.)']]
   const txnBody = filteredTransactions.value.map(t => [
-    fmtTime(t.created_at),
-    t.invoice_no,
-    t.users?.full_name || '—',
-    paymentLabel(t.payment_method),
-    t.status,
-    String(itemCountByTxn.value.get(t.id) ?? 0),
+    fmtTime(t.time),
+    t.invoiceLabel,
+    t.cashierName,
+    paymentLabel(t.paymentMethod),
+    t.statusLabel,
+    t.itemsCount === null ? '—' : String(t.itemsCount),
     t.total.toFixed(2),
   ])
   autoTable(doc, {
@@ -531,7 +716,7 @@ function exportPDF() {
   y = (doc as any).lastAutoTable.finalY + 26
 
   // ── ITEM-BY-ITEM BREAKDOWN ──
-  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoice_no]))
+  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoiceLabel]))
   const filteredIds = new Set(filteredTransactions.value.map(t => t.id))
   const itemBody = itemRows.value
     .filter(row => filteredIds.has(row.transaction_id))
@@ -686,13 +871,13 @@ onMounted(() => {
         <div class="stat-card">
           <div class="stat-label">Sales</div>
           <div class="stat-value">{{ fmtRs(todaysSalesTotal) }}</div>
-          <div class="stat-sub">cash, card &amp; bank only</div>
+          <div class="stat-sub">cash, card, bank + pay later collected</div>
         </div>
         <!-- Cost of Goods Sold -->
         <div class="stat-card">
           <div class="stat-label">Cost of Goods</div>
           <div class="stat-value">{{ fmtRs(todaysCostTotal) }}</div>
-          <div class="stat-sub">cost price of items sold</div>
+          <div class="stat-sub">cost price, incl. pay later recovered</div>
         </div>
         <!-- Profit -->
         <div class="stat-card">
@@ -706,11 +891,12 @@ onMounted(() => {
           <div class="stat-value">{{ todaysSalesCount }}</div>
           <div class="stat-sub">completed sales today</div>
         </div>
-        <!-- Later Pay — kept separate, NOT part of the totals above -->
+        <!-- Later Pay — NEW orders sold on credit today. Not counted as
+             sales until a customer actually pays (see Pay Later Paid rows). -->
         <div class="stat-card later-card">
           <div class="stat-label">Later Pay</div>
           <div class="stat-value">{{ laterPayCount }} <span class="stat-value-sub">order{{ laterPayCount === 1 ? '' : 's' }}</span></div>
-          <div class="stat-sub">{{ fmtRs(laterPayTotal) }} owed · not in totals above</div>
+          <div class="stat-sub">{{ fmtRs(laterPayTotal) }} in new orders · counted once paid</div>
         </div>
       </div>
 
@@ -788,55 +974,61 @@ onMounted(() => {
                     <svg class="expand-arrow" :class="{ open: expandedIds.has(t.id) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                   </td>
                   <td>{{ index + 1 }}</td>
-                  <td class="date-cell">{{ fmtTime(t.created_at) }}</td>
-                  <td class="sku-cell">{{ t.invoice_no }}</td>
-                  <td class="name-cell">{{ t.users?.full_name || '—' }}</td>
-                  <td class="center-cell">{{ itemCountByTxn.get(t.id) ?? 0 }}</td>
+                  <td class="date-cell">{{ fmtTime(t.time) }}</td>
+                  <td class="sku-cell">{{ t.invoiceLabel }}</td>
+                  <td class="name-cell">{{ t.cashierName }}</td>
+                  <td class="center-cell">{{ t.itemsCount === null ? '—' : t.itemsCount }}</td>
                   <td>
-                    <span class="pay-badge" :class="t.payment_method">{{ paymentLabel(t.payment_method) }}</span>
+                    <span class="pay-badge" :class="t.paymentMethod">{{ paymentLabel(t.paymentMethod) }}</span>
                   </td>
                   <td>
-                    <span class="status-badge" :class="t.status">{{ t.status }}</span>
+                    <span class="status-badge" :class="t.statusKind">{{ t.statusLabel }}</span>
                   </td>
                   <td class="center-cell">
-                    <span class="printed-badge" :class="{ yes: t.printed_receipt }">
-                      {{ t.printed_receipt ? 'Printed' : 'Not printed' }}
+                    <span v-if="t.printed !== null" class="printed-badge" :class="{ yes: t.printed }">
+                      {{ t.printed ? 'Printed' : 'Not printed' }}
                     </span>
+                    <span v-else class="no-discount">—</span>
                   </td>
                   <td class="center-cell">
-                    <span v-if="t.discount_percent > 0" class="bill-discount-badge">{{ t.discount_percent }}% off</span>
-                    <span v-else class="no-discount">No discount</span>
+                    <span v-if="t.discountPercent && t.discountPercent > 0" class="bill-discount-badge">{{ t.discountPercent }}% off</span>
+                    <span v-else class="no-discount">{{ t.discountPercent === null ? '—' : 'No discount' }}</span>
                   </td>
                   <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(t.total) }}</td>
                 </tr>
 
-                <!-- ── EXPANDED PANEL: every item in this bill ── -->
+                <!-- ── EXPANDED PANEL: every item in this bill (sales) or a note (Pay Later payments) ── -->
                 <tr v-if="expandedIds.has(t.id)" class="expand-panel-row">
                   <td colspan="11">
                     <div class="expand-panel">
-                      <div
-                        v-for="item in (itemsByTxn.get(t.id) ?? [])"
-                        :key="item.id"
-                        class="expand-item"
-                      >
-                        <img
-                          v-if="item.products?.image_url"
-                          :src="item.products.image_url"
-                          class="expand-item-img"
-                        />
-                        <div v-else class="expand-item-img expand-item-img-placeholder">
-                          <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="16" height="16"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-4 4 4"/><path d="M3 15l4 4 4-4 4 4 4-4"/></svg>
+                      <template v-if="t.kind === 'sale'">
+                        <div
+                          v-for="item in (itemsByTxn.get(t.id) ?? [])"
+                          :key="item.id"
+                          class="expand-item"
+                        >
+                          <img
+                            v-if="item.products?.image_url"
+                            :src="item.products.image_url"
+                            class="expand-item-img"
+                          />
+                          <div v-else class="expand-item-img expand-item-img-placeholder">
+                            <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="16" height="16"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9l4-4 4 4 4-4 4 4"/><path d="M3 15l4 4 4-4 4 4 4-4"/></svg>
+                          </div>
+                          <div class="expand-item-info">
+                            <div class="expand-item-name">{{ item.product_name }}</div>
+                            <div class="expand-item-sku">{{ item.sku || '—' }}</div>
+                          </div>
+                          <span class="discount-badge" :class="discountLabelClass(item.discount_label)">{{ item.discount_label || '—' }}</span>
+                          <div class="expand-item-qty">x{{ item.qty }}</div>
+                          <div class="expand-item-price">{{ fmtRs(item.unit_price) }}</div>
+                          <div class="expand-item-total">{{ fmtRs(item.line_total) }}</div>
                         </div>
-                        <div class="expand-item-info">
-                          <div class="expand-item-name">{{ item.product_name }}</div>
-                          <div class="expand-item-sku">{{ item.sku || '—' }}</div>
-                        </div>
-                        <span class="discount-badge" :class="discountLabelClass(item.discount_label)">{{ item.discount_label || '—' }}</span>
-                        <div class="expand-item-qty">x{{ item.qty }}</div>
-                        <div class="expand-item-price">{{ fmtRs(item.unit_price) }}</div>
-                        <div class="expand-item-total">{{ fmtRs(item.line_total) }}</div>
-                      </div>
-                      <div v-if="(itemsByTxn.get(t.id) ?? []).length === 0" class="expand-empty">No item details found</div>
+                        <div v-if="(itemsByTxn.get(t.id) ?? []).length === 0" class="expand-empty">No item details found</div>
+                      </template>
+                      <template v-else>
+                        <div class="expand-empty">{{ t.note ? `Note: ${t.note}` : 'No note added for this payment.' }}</div>
+                      </template>
                     </div>
                   </td>
                 </tr>
@@ -1161,9 +1353,10 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   text-transform: capitalize;
   background: var(--surface2); color: var(--text-sub);
 }
-.status-badge.completed { background: var(--green-bg); color: var(--green); }
-.status-badge.refunded  { background: var(--amber-bg); color: var(--amber); }
-.status-badge.void      { background: var(--red-bg); color: var(--red); }
+.status-badge.completed      { background: var(--green-bg); color: var(--green); }
+.status-badge.refunded       { background: var(--amber-bg); color: var(--amber); }
+.status-badge.void           { background: var(--red-bg); color: var(--red); }
+.status-badge.pay_later_paid { background: var(--amber-bg); color: var(--amber); }
 
 /* ── Printed receipt badge ── */
 .printed-badge {
