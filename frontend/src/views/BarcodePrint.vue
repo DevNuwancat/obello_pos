@@ -512,7 +512,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .print-label {
   position: relative;
   background: #ffffff;
-  border: 1px solid #000;
+  border: 1px solid #eae8e8;
   /* height still hugs content, not forced to match width — but we set a
      min-height so the vertical price text always has room to sit centered
      instead of overflowing/clipping at the top or bottom. */
@@ -550,7 +550,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   writing-mode: vertical-rl;
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 800;
-  font-size: 13px;
+  font-size: 11px;
   color: #111110;
   white-space: nowrap;
 }
