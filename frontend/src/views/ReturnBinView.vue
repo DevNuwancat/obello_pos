@@ -22,6 +22,7 @@ import { markConnected, markError } from '../lib/connectionStatus'
 interface ReturnEntry {
   id: string
   product_id: string | null
+  transaction_id: string | null
   invoice_no: string | null
   product_name: string
   sku: string | null
@@ -84,6 +85,59 @@ function onAddSaved() { fetchReturns() }
 // ── RETURN TO STOCK ──
 const actingId = ref<string | null>(null)
 
+function fmtRs(n: number): string {
+  return `Rs. ${n.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+// If this returned item was sold on a Pay Later (credit) bill, shrink that
+// bill's total by what the returned unit(s) cost — the Pay Later balances
+// view sums transactions.total per customer, so lowering it here is what
+// actually reduces "how much they owe". Returns null if there's nothing to
+// adjust (cash/card sale, or the bill/line can't be found).
+async function refundPayLaterBalance(entry: ReturnEntry): Promise<number | null> {
+  if (!entry.transaction_id) return null
+
+  const { data: txn, error: txnErr } = await supabase
+    .from('transactions')
+    .select('id, total, payment_method, customer_id')
+    .eq('id', entry.transaction_id)
+    .single()
+  if (txnErr || !txn || txn.payment_method !== 'later_pay' || !txn.customer_id) return null
+
+  // The matching line item tells us the per-unit cost as it was actually
+  // sold (line_total already reflects any discount applied at checkout).
+  const { data: item } = await supabase
+    .from('transaction_items')
+    .select('id, qty, line_total')
+    .eq('transaction_id', txn.id)
+    .eq('product_id', entry.product_id!)
+    .maybeSingle()
+
+  if (!item || item.qty <= 0) return null
+
+  const unitCost      = item.line_total / item.qty
+  const refundAmount  = Math.min(Math.round(unitCost * entry.qty * 100) / 100, txn.total)
+  if (refundAmount <= 0) return null
+
+  const { error: updTxnErr } = await supabase
+    .from('transactions')
+    .update({ total: Math.max(0, txn.total - refundAmount) })
+    .eq('id', txn.id)
+  if (updTxnErr) { showMsg('Restocked, but could not update the customer balance: ' + updTxnErr.message); return null }
+
+  // Also trim the bill's own line item so the Pay Later "what did they buy"
+  // breakdown stays consistent with the smaller total above.
+  await supabase
+    .from('transaction_items')
+    .update({
+      qty:        Math.max(0, item.qty - entry.qty),
+      line_total: Math.max(0, item.line_total - refundAmount),
+    })
+    .eq('id', item.id)
+
+  return refundAmount
+}
+
 async function returnToStock(entry: ReturnEntry) {
   actingId.value = entry.id
   try {
@@ -102,11 +156,17 @@ async function returnToStock(entry: ReturnEntry) {
 
     if (updateErr) { showMsg('Could not restock: ' + updateErr.message); return }
 
+    const refunded = await refundPayLaterBalance(entry)
+
     const { error: deleteErr } = await supabase.from('product_returns').delete().eq('id', entry.id)
     if (deleteErr) { showMsg('Restocked, but could not remove it from the bin: ' + deleteErr.message); return }
 
     returns.value = returns.value.filter(r => r.id !== entry.id)
-    showMsg(`${entry.product_name} restocked (+${entry.qty})`)
+    showMsg(
+      refunded
+        ? `${entry.product_name} restocked (+${entry.qty}) — ${fmtRs(refunded)} removed from customer balance`
+        : `${entry.product_name} restocked (+${entry.qty})`
+    )
   } catch {
     showMsg('Something went wrong. Please try again.')
   } finally {

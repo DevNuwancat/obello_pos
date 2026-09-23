@@ -857,6 +857,7 @@ onMounted(fetchAll)
                             v-for="item in (itemsByBill.get(bill.id) ?? [])"
                             :key="item.id"
                             class="expand-item"
+                            :class="{ 'expand-item-returned': item.qty === 0 }"
                           >
                             <img v-if="item.products?.image_url" :src="item.products.image_url" class="expand-item-img" />
                             <div v-else class="expand-item-img expand-item-img-placeholder">
@@ -866,7 +867,11 @@ onMounted(fetchAll)
                               <div class="expand-item-name">{{ item.product_name }}</div>
                               <div class="expand-item-sku">{{ item.sku || '—' }}</div>
                             </div>
-                            <span class="discount-badge" :class="discountLabelClass(item.discount_label)">{{ item.discount_label || '—' }}</span>
+                            <span v-if="item.qty === 0" class="returned-badge" title="This item was returned — its cost has already been removed from the balance">
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                              Returned
+                            </span>
+                            <span v-else class="discount-badge" :class="discountLabelClass(item.discount_label)">{{ item.discount_label || '—' }}</span>
                             <div class="expand-item-qty">x{{ item.qty }}</div>
                             <div class="expand-item-total">{{ fmtRs(item.line_total) }}</div>
                           </div>
@@ -1259,6 +1264,18 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .discount-badge.label-discount { border-color: var(--green); background: var(--green-bg); color: var(--green); }
 .discount-badge.label-super    { border-color: #8b5cf6; background: rgba(139,92,246,0.12); color: #8b5cf6; }
 .discount-badge.label-original { border-color: var(--border); background: var(--surface); color: var(--text-sub); }
+
+/* Fully returned line item — dim the row and swap the discount badge for a "Returned" tag */
+.expand-item-returned .expand-item-name,
+.expand-item-returned .expand-item-total { color: var(--text-muted); text-decoration: line-through; }
+.expand-item-returned .expand-item-img { opacity: .5; }
+
+.returned-badge {
+  display: inline-flex; align-items: center; gap: 4px; justify-content: center;
+  padding: 2px 8px; border-radius: 5px; font-size: 9px; font-weight: 600;
+  letter-spacing: .03em; text-transform: uppercase; width: 68px; flex-shrink: 0;
+  border: 1px solid var(--red); background: var(--red-bg); color: var(--red);
+}
 
 .payment-block  { padding: 2px 0; }
 .payment-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; font-size: 12.5px; }

@@ -101,6 +101,25 @@ const lotNo         = ref('')
 const designNo      = ref('')
 const color         = ref('')
 
+// ── AUTO-NAME ──
+// Same behavior as AddClothModal: rebuilds Product Name as "{Category} {Size} {Color}"
+// whenever any of those change, so edits show up live. Stops once the user
+// types into the name field themselves, so we never stomp a custom name.
+// nameWasEdited starts true so loading the existing product's saved name
+// (in the modelValue watcher below) isn't immediately overwritten — it's
+// flipped to false only once that initial load has fully finished.
+const nameWasEdited = ref(true)
+
+watch([selectedCategory, size, color], () => {
+  if (nameWasEdited.value) return
+  const parts = [
+    selectedCategory.value?.name,
+    size.value,
+    color.value,
+  ].filter(Boolean)
+  name.value = parts.join(' ')
+})
+
 // ── IMAGE ──
 const imagePreview    = ref<string | null>(null)
 const imageFile       = ref<File | null>(null)
@@ -211,6 +230,9 @@ watch(() => props.modelValue, async (isOpen) => {
     await getOwners()
 
     const p = props.product
+    // block the auto-name watcher below while we load the product's saved
+    // fields, so its saved name isn't overwritten during this setup
+    nameWasEdited.value = true
     name.value          = p.name || ''
     cost.value          = String(p.cost_price ?? '')
     sellingPrice.value  = String(p.selling_price ?? '')
@@ -233,6 +255,8 @@ watch(() => props.modelValue, async (isOpen) => {
     setTimeout(() => {
       const match = allCategories.value.find(c => c.name === p.sub_category && c.type === p.main_category)
       selectedCategory.value = match || null
+      // loading is done — from here on, changing category/size/color live-updates the name
+      nameWasEdited.value = false
     }, 50)
 
     // Match supplier by id
@@ -296,7 +320,7 @@ async function save() {
       image_url,
     })
 
-    let { error } = await supabase.from('products').update(buildRow()).eq('id', props.product.id)
+    let { data, error } = await supabase.from('products').update(buildRow()).eq('id', props.product.id).select('id')
 
     // Safety net: if the barcode we're saving got taken by another product in
     // the split second between clicking "Gen" and clicking "Save" (or the
@@ -305,10 +329,19 @@ async function save() {
     // try saving one more time.
     if (error?.code === '23505' && error.message.includes('barcode')) {
       barcode.value = await nextBarcode()
-      ;({ error } = await supabase.from('products').update(buildRow()).eq('id', props.product.id))
+      ;({ data, error } = await supabase.from('products').update(buildRow()).eq('id', props.product.id).select('id'))
     }
 
     if (error) { saveError.value = friendlyDbError(error); return }
+
+    // Supabase reports no error when an UPDATE matches zero rows (e.g. a
+    // Row Level Security policy silently blocks it) — .select('id') above
+    // makes the matched/updated row come back so we can catch that case
+    // instead of showing a false "saved" toast while nothing changed.
+    if (!data || data.length === 0) {
+      saveError.value = 'The product could not be updated — you may not have permission to edit it.'
+      return
+    }
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
     return
@@ -387,7 +420,7 @@ async function save() {
               <!-- Product Name -->
               <div class="form-field">
                 <label class="form-label">Product Name <span class="req">*</span></label>
-                <input v-model="name" class="form-input" :class="{ error: showErrors && !name }" placeholder="e.g. Chinos XL Blue" />
+                <input v-model="name" @input="nameWasEdited = true" class="form-input" :class="{ error: showErrors && !name }" placeholder="e.g. Chinos XL Blue" />
                 <span v-if="showErrors && !name" class="form-error">Required</span>
               </div>
 

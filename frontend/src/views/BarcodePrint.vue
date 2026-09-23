@@ -52,11 +52,29 @@ function removeItem(id: string) {
   store.removeFromQueue(id)
 }
 
+function toggleKeep(id: string, value: boolean) {
+  store.toggleKeep(id, value)
+}
+
+const keptCount = computed(() => store.queue.filter((i) => i.keep).length)
+
+// "Clear All" — wipes everything EXCEPT items the user ticked "Keep" on
 function clearAll() {
   if (store.queue.length === 0) return
-  if (!confirm('Clear the entire barcode print queue? This cannot be undone.')) return
-  store.clearQueue()
-  showToastMsg('Print queue cleared')
+  const msg = keptCount.value > 0
+    ? `Clear the print queue? ${keptCount.value} kept item(s) will stay. This cannot be undone.`
+    : 'Clear the entire barcode print queue? This cannot be undone.'
+  if (!confirm(msg)) return
+  store.clearQueue(false)
+  showToastMsg(keptCount.value > 0 ? 'Print queue cleared (kept items stayed)' : 'Print queue cleared')
+}
+
+// "Clear All (Incl. Kept)" — ignores the keep flag and wipes literally everything
+function clearAllIncludingKept() {
+  if (store.queue.length === 0) return
+  if (!confirm('Clear the ENTIRE print queue, including kept items? This cannot be undone.')) return
+  store.clearQueue(true)
+  showToastMsg('Print queue fully cleared')
 }
 
 
@@ -71,7 +89,32 @@ function printLabels() {
     showToastMsg('Your print queue is empty')
     return
   }
+  // 'afterprint' fires once the browser's print dialog closes — whether the
+  // user actually printed/saved a PDF or just hit Cancel. The browser gives
+  // us no way to tell those two apart, so once it closes we ask the user
+  // ourselves via the confirm modal below.
+  window.addEventListener('afterprint', onAfterPrint, { once: true })
   window.print()
+}
+
+function onAfterPrint() {
+  showClearModal.value = true
+}
+
+// ──────────────────────────────────────────────
+// 5c. "CLEAR PRINTED ITEMS?" MODAL — shown after the print dialog closes
+// ──────────────────────────────────────────────
+const showClearModal = ref(false)
+
+function confirmClearPrinted() {
+  const hadKept = keptCount.value > 0
+  store.clearQueue(false) // kept items are protected here too
+  showClearModal.value = false
+  showToastMsg(hadKept ? 'Print queue cleared (kept items stayed)' : 'Print queue cleared')
+}
+
+function cancelClearPrinted() {
+  showClearModal.value = false
 }
 
 // Flatten the queue into one entry PER LABEL COPY (qty=3 → 3 entries),
@@ -182,17 +225,25 @@ function showToastMsg(msg: string) {
 
       <!-- ── TOOLBAR ── -->
       <div class="toolbar">
-        <div class="toolbar-right" style="margin-left:0">
-          <button class="btn btn-outline" @click="clearAll" title="Empty the print queue">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path stroke-linecap="round" d="M10 11v6M14 11v6"/></svg>
-            Clear All
-          </button>
-        </div>
-        <div class="toolbar-right">
-          <button class="btn btn-primary" @click="printLabels" title="Print / Save as PDF">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
-            Print Labels
-          </button>
+
+        <!-- actions -->
+        <div class="toolbar-row toolbar-actions">
+          <div class="toolbar-right" style="margin-left:0">
+            <button class="btn btn-outline" @click="clearAll" title="Empty the print queue (keeps ticked items)">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path stroke-linecap="round" d="M10 11v6M14 11v6"/></svg>
+              Clear All
+            </button>
+            <button v-if="keptCount > 0" class="btn btn-outline" @click="clearAllIncludingKept" title="Empty the print queue, including kept items">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path stroke-linecap="round" d="M10 11v6M14 11v6"/></svg>
+              Clear All (Incl. Kept)
+            </button>
+          </div>
+          <div class="toolbar-right">
+            <button class="btn btn-primary" @click="printLabels" title="Print / Save as PDF">
+              <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
+              Print Labels
+            </button>
+          </div>
         </div>
       </div>
 
@@ -209,13 +260,14 @@ function showToastMsg(msg: string) {
               <th>SKU</th>
               <th>Barcode</th>
               <th class="center">Qty (labels)</th>
+              <th class="center" title="Ticked items are skipped by Clear All">Keep</th>
               <th style="text-align:right; padding-right:20px;">Actions</th>
             </tr>
           </thead>
 
           <tbody>
             <tr v-if="store.queue.length === 0">
-              <td colspan="7" class="empty-row">
+              <td colspan="8" class="empty-row">
                 No items in your print queue — go to Product List and click the barcode icon on any product.
               </td>
             </tr>
@@ -242,6 +294,15 @@ function showToastMsg(msg: string) {
                   class="qty-input"
                   :value="item.qty"
                   @input="updateQty(item.id, Number(($event.target as HTMLInputElement).value))"
+                />
+              </td>
+              <td class="center-cell">
+                <input
+                  type="checkbox"
+                  class="keep-checkbox"
+                  :checked="item.keep"
+                  title="Keep this item when clearing the queue"
+                  @change="toggleKeep(item.id, ($event.target as HTMLInputElement).checked)"
                 />
               </td>
               <td style="text-align:right; padding-right:20px;">
@@ -280,6 +341,24 @@ function showToastMsg(msg: string) {
 
     <!-- ── TOAST ── -->
     <Toast :message="toastMsg" :show="toastVisible" />
+
+    <!-- ══════════════════════════════════════ -->
+    <!--   "CLEAR PRINTED ITEMS?" MODAL         -->
+    <!--   Shown once the print dialog closes  -->
+    <!-- ══════════════════════════════════════ -->
+    <div v-if="showClearModal" class="modal-overlay" @click.self="cancelClearPrinted">
+      <div class="modal-box">
+        <h3 class="modal-title">Clear printed items?</h3>
+        <p class="modal-text">Do you want to remove all items from the print queue now that they've been printed?</p>
+        <p v-if="keptCount > 0" class="modal-note">
+          {{ keptCount }} item(s) are ticked "Keep" and will stay in the queue either way.
+        </p>
+        <div class="modal-actions">
+          <button class="btn btn-outline" @click="cancelClearPrinted">No</button>
+          <button class="btn btn-primary" @click="confirmClearPrinted">Yes, clear</button>
+        </div>
+      </div>
+    </div>
 
   </div>
 </template>
@@ -395,10 +474,67 @@ function showToastMsg(msg: string) {
    ══════════════════════════════════ */
 .toolbar {
   padding: 20px 32px 0;
+  display: flex; flex-direction: column;
+  gap: 10px;
+}
+
+.toolbar-row {
   display: flex; align-items: center;
   justify-content: space-between;
   gap: 12px; flex-wrap: wrap;
 }
+.toolbar-filters { justify-content: flex-start; }
+
+.select-wrap { position: relative; }
+.select-wrap select {
+  appearance: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  padding: 8px 36px 8px 12px;
+  border-radius: 8px;
+  cursor: pointer; outline: none;
+  transition: border-color .15s;
+  min-width: 140px;
+}
+.select-wrap select:focus { border-color: var(--text-sub); }
+.select-wrap::after {
+  content: '';
+  position: absolute; right: 12px; top: 50%;
+  transform: translateY(-50%);
+  width: 0; height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--text-sub);
+  pointer-events: none;
+}
+
+.search-box {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  flex: 1; min-width: 200px; max-width: 360px;
+}
+.search-box svg { width: 15px; height: 15px; color: var(--text-sub); flex-shrink: 0; }
+.search-box input {
+  border: none; background: transparent;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px; color: var(--text);
+  outline: none; width: 100%;
+}
+.search-box input::placeholder { color: var(--text-sub); }
+
+.btn-clear-filters {
+  padding: 8px 14px; border-radius: 8px;
+  border: 1px dashed var(--border); background: transparent;
+  color: var(--text-sub); font-size: 12.5px; font-family: 'DM Sans', sans-serif;
+  cursor: pointer; transition: color .15s, border-color .15s;
+}
+.btn-clear-filters:hover { color: var(--red); border-color: var(--red); }
 
 .btn {
   display: flex; align-items: center; gap: 6px;
@@ -598,13 +734,46 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 
 
 /* ══════════════════════════════════
+   "CLEAR PRINTED ITEMS?" MODAL
+   ══════════════════════════════════ */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.5);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  padding: 24px;
+  width: 100%; max-width: 360px;
+}
+.modal-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.modal-text { font-size: 13px; color: var(--text-sub); margin-top: 8px; line-height: 1.5; }
+.modal-note {
+  font-size: 12px; color: var(--text); margin-top: 12px;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+.keep-checkbox {
+  width: 16px; height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+
+/* ══════════════════════════════════
    PRINT MODE
    ══════════════════════════════════ */
 @media print {
   @page { size: A4 portrait; margin: 6mm; }
 
   :deep(.sidebar) { display: none !important; }
-  .page-header, .stats-bar, .toolbar, .table-wrap { display: none !important; }
+  .page-header, .stats-bar, .toolbar, .table-wrap, .modal-overlay { display: none !important; }
 
   /* min-height: 100vh (used for normal on-screen layout) reserves a full
      blank page before the label sheet if left in place while printing —

@@ -9,6 +9,9 @@ export interface BarcodeQueueItem {
   selling_price: number;
   image_url: string | null;
   qty: number;
+  // When true, this item is protected from the normal "Clear All" / post-print
+  // clear — it's only removed when the user explicitly clears flagged items too.
+  keep: boolean;
 }
 
 const STORAGE_KEY = "barcode-print-queue";
@@ -41,11 +44,14 @@ export const useBarcodePrintStore = defineStore("barcodePrint", {
     // Add a product to the queue. If it's already queued, just update the qty
     // instead of creating a duplicate row.
     addToQueue(product: { id: string; name: string; sku: string | null; barcode: string | null; selling_price: number; image_url: string | null }, qty?: number) {
-      const existing = this.queue.find((i) => i.id === product.id);
-      if (existing) {
-        existing.qty = qty ?? existing.qty;
+      const existingIndex = this.queue.findIndex((i) => i.id === product.id);
+      let item: BarcodeQueueItem;
+      if (existingIndex !== -1) {
+        // remove it from its current spot so we can move it to the top below
+        [item] = this.queue.splice(existingIndex, 1);
+        item.qty = qty ?? item.qty;
       } else {
-        this.queue.push({
+        item = {
           id: product.id,
           name: product.name,
           sku: product.sku,
@@ -53,8 +59,11 @@ export const useBarcodePrintStore = defineStore("barcodePrint", {
           selling_price: product.selling_price,
           image_url: product.image_url,
           qty: qty ?? 1,
-        });
+          keep: false,
+        };
       }
+      // unshift (not push) so the most recently added/re-added item shows first
+      this.queue.unshift(item);
       this.persist();
     },
 
@@ -70,8 +79,17 @@ export const useBarcodePrintStore = defineStore("barcodePrint", {
       this.persist();
     },
 
-    clearQueue() {
-      this.queue = [];
+    toggleKeep(id: string, keep: boolean) {
+      const item = this.queue.find((i) => i.id === id);
+      if (!item) return;
+      item.keep = keep;
+      this.persist();
+    },
+
+    // By default, items marked "keep" survive a clear. Pass includeFlagged
+    // to wipe everything, flagged or not.
+    clearQueue(includeFlagged = false) {
+      this.queue = includeFlagged ? [] : this.queue.filter((i) => i.keep);
       this.persist();
     },
   },

@@ -344,6 +344,54 @@ function toggleExpand(id: string) {
   expandedIds.value = next
 }
 
+
+// ──────────────────────────────────────────────
+// 7c. REPRINT — resend any past sale to the same local print agent the
+// POS screen uses (http://localhost:8899), so a lost/skipped receipt
+// can be printed again straight from this report.
+// ──────────────────────────────────────────────
+const printingId = ref<string | null>(null)
+
+async function reprintBill(t: Transaction) {
+  printingId.value = t.id
+  try {
+    const items = itemsByTxn.value.get(t.id) ?? []
+    await fetch('http://localhost:8899/print-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        invoice_no: t.invoice_no,
+        items: items.map(i => ({
+          product_name: i.product_name,
+          quantity: i.qty,
+          unit_price: i.unit_price,
+        })),
+        payment_method: t.payment_method,
+        subtotal: t.subtotal,
+        discount_amount: t.discount_amount,
+        total: t.total,
+        amount_paid: t.amount_paid,
+        balance: t.balance,
+        is_cash_sale: t.payment_method === 'cash',
+      }),
+    })
+
+    // Mark it as printed now, in case it wasn't already (keeps the
+    // "Printed" column in this table honest for anyone checking later)
+    if (!t.printed_receipt) {
+      const { error } = await supabase.from('transactions').update({ printed_receipt: true }).eq('id', t.id)
+      if (!error) t.printed_receipt = true
+    }
+
+    showToastMsg(`Reprinting ${t.invoice_no}…`)
+  } catch (e) {
+    console.warn('Print agent not running or unreachable:', e)
+    showToastMsg('⚠️ Could not reach printer — make sure the print agent is running')
+  } finally {
+    printingId.value = null
+  }
+}
+
 // Discount label → CSS class, so "Discount" / "Super" / "Original" each get
 // their own colour (matches the price-mode buttons on the POS cart screen)
 function discountLabelClass(label: string | null): string {
@@ -827,6 +875,7 @@ onMounted(() => {
                         v-for="item in (itemsByTxn.get(t.id) ?? [])"
                         :key="item.id"
                         class="expand-item"
+                        :class="{ 'expand-item-returned': item.qty === 0 }"
                       >
                         <img
                           v-if="item.products?.image_url"
@@ -840,12 +889,28 @@ onMounted(() => {
                           <div class="expand-item-name">{{ item.product_name }}</div>
                           <div class="expand-item-sku">{{ item.sku || '—' }}</div>
                         </div>
-                        <span class="discount-badge" :class="discountLabelClass(item.discount_label)">{{ item.discount_label || '—' }}</span>
+                        <span v-if="item.qty === 0" class="returned-badge" title="This item was returned — its cost has been removed from the total">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                          Returned
+                        </span>
+                        <span v-else class="discount-badge" :class="discountLabelClass(item.discount_label)">{{ item.discount_label || '—' }}</span>
                         <div class="expand-item-qty">x{{ item.qty }}</div>
                         <div class="expand-item-price">{{ fmtRs(item.unit_price) }}</div>
                         <div class="expand-item-total">{{ fmtRs(item.line_total) }}</div>
                       </div>
                       <div v-if="(itemsByTxn.get(t.id) ?? []).length === 0" class="expand-empty">No item details found</div>
+
+                      <!-- Reprint this bill — sits under its item list -->
+                      <div class="expand-print-row">
+                        <button
+                          class="btn-reprint"
+                          :disabled="printingId === t.id"
+                          @click="reprintBill(t)"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                          {{ printingId === t.id ? 'Printing…' : 'Print' }}
+                        </button>
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -1183,6 +1248,23 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 }
 .printed-badge.yes { background: var(--green-bg); color: var(--green); }
 
+/* ── Reprint row + button — sits under the item list in the expanded panel ── */
+.expand-print-row {
+  display: flex; justify-content: flex-end;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.btn-reprint {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  font-size: 12.5px; font-weight: 600; font-family: 'DM Sans', sans-serif;
+  cursor: pointer; transition: background .15s, border-color .15s;
+}
+.btn-reprint svg { flex-shrink: 0; }
+.btn-reprint:hover:not(:disabled) { background: var(--surface2); border-color: var(--text-sub); }
+.btn-reprint:disabled { opacity: .5; cursor: not-allowed; }
+
 /* ── Bill-level discount badge ── */
 .bill-discount-badge {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1255,5 +1337,20 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .discount-badge.label-discount { border-color: var(--green); background: var(--green-bg); color: var(--green); }
 .discount-badge.label-super    { border-color: #8b5cf6; background: rgba(139,92,246,0.12); color: #8b5cf6; }
 .discount-badge.label-original { border-color: var(--border); background: var(--surface); color: var(--text-sub); }
+
+/* Fully returned line item — dim the row and swap the discount badge for a "Returned" tag */
+.expand-item-returned .expand-item-name,
+.expand-item-returned .expand-item-price,
+.expand-item-returned .expand-item-total { color: var(--text-muted); text-decoration: line-through; }
+.expand-item-returned .expand-item-img { opacity: .5; }
+
+.returned-badge {
+  display: inline-flex; align-items: center; gap: 4px; justify-content: center;
+  padding: 2px 9px; border-radius: 5px;
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 0.03em; text-transform: uppercase;
+  width: 80px; flex-shrink: 0;
+  border: 1px solid var(--red); background: var(--red-bg); color: var(--red);
+}
 
 </style>
