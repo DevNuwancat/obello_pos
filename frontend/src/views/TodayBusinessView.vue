@@ -332,6 +332,17 @@ const itemsByTxn = computed(() => {
 })
 
 
+// Profit of ONE invoice (shown when its row is opened):
+// what the customer paid (after any bill discount) minus what the items cost you.
+function billFigures(t: Transaction) {
+  const items = itemsByTxn.value.get(t.id) ?? []
+  const cost = items.reduce((sum, i) => sum + (i.products?.cost_price ?? 0) * i.qty, 0)
+  const profit = t.total - cost
+  const margin = t.total > 0 ? (profit / t.total) * 100 : 0
+  return { cost, profit, margin }
+}
+
+
 // ──────────────────────────────────────────────
 // 7. PAYMENT METHOD FILTER (for the table only)
 // ──────────────────────────────────────────────
@@ -1038,6 +1049,26 @@ onMounted(() => {
                       </div>
                       <div v-if="(itemsByTxn.get(t.id) ?? []).length === 0" class="expand-empty">No item details found</div>
 
+                      <!-- Profit for this invoice: sale total − cost of its items -->
+                      <div class="bill-profit">
+                        <div class="bp-cell">
+                          <span class="bp-label">Sale Total</span>
+                          <span class="bp-value">{{ fmtRs(t.total) }}</span>
+                        </div>
+                        <div class="bp-cell">
+                          <span class="bp-label">Cost of Items</span>
+                          <span class="bp-value">{{ fmtRs(billFigures(t).cost) }}</span>
+                        </div>
+                        <div class="bp-cell">
+                          <span class="bp-label">Profit</span>
+                          <span class="bp-value" :class="billFigures(t).profit < 0 ? 'bp-loss' : 'bp-gain'">{{ fmtRs(billFigures(t).profit) }}</span>
+                        </div>
+                        <div class="bp-cell">
+                          <span class="bp-label">Margin</span>
+                          <span class="bp-value" :class="billFigures(t).profit < 0 ? 'bp-loss' : 'bp-gain'">{{ billFigures(t).margin.toFixed(1) }}%</span>
+                        </div>
+                      </div>
+
                       <!-- Reprint this bill — sits under its item list -->
                       <div class="expand-print-row">
                         <button
@@ -1386,6 +1417,21 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   background: var(--surface2); color: var(--text-muted);
 }
 .printed-badge.yes { background: var(--green-bg); color: var(--green); }
+
+/* ── Profit strip — one invoice's sale / cost / profit / margin ── */
+.bill-profit {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  margin-top: 12px;
+}
+.bp-cell {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 14px; border-radius: 9px;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.bp-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-sub); font-weight: 500; }
+.bp-value { font-size: 15px; font-weight: 600; font-family: 'DM Mono', monospace; color: var(--text); }
+.bp-gain { color: var(--green); }
+.bp-loss { color: var(--red); }
 
 /* ── Reprint row + button — sits under the item list in the expanded panel ── */
 .expand-print-row {
