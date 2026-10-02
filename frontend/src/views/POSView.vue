@@ -306,7 +306,7 @@ async function onHoldConfirm(payload: { customerId: string }) {
     }))
     const { error: itemsError } = await supabase.from('customer_hold_items').insert(rows)
     if (itemsError) {
-      if (createdNew) await supabase.from('customer_holds').delete().eq('id', hold.id)
+      if (createdNew) await supabase.from('customer_holds').delete().eq('id', hold!.id)
       showToast('Hold failed: ' + itemsError.message)
       return
     }
