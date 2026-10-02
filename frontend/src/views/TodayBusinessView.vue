@@ -499,6 +499,57 @@ function exportCSV() {
 }
 
 
+// ── Shared PDF look: bordered grid, light header with bold dark text ──
+const borderColor: [number, number, number] = [90, 88, 84]
+const headFill: [number, number, number] = [247, 245, 242]
+const gridStyles = {
+  font: 'helvetica', fontSize: 9, cellPadding: 6, textColor: [20, 20, 18] as [number, number, number],
+  lineColor: borderColor, lineWidth: 0.6,
+}
+const gridHead = { fillColor: headFill, textColor: [20, 20, 18] as [number, number, number], fontStyle: 'bold' as const }
+
+// "obello POS V2.0" on the left, report title + subtitle on the right, thin line under.
+// Returns the y position where the page body should start.
+function drawReportHeader(doc: jsPDF, title: string, subtitle: string): number {
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const margin = 40
+  let y = 50
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(20)
+  doc.setTextColor(20, 20, 18)
+  doc.text('obello', margin, y)
+  doc.setFontSize(10)
+  doc.setTextColor(120, 120, 115)
+  doc.setFont('helvetica', 'normal')
+  doc.text('POS V2.0', margin + 62, y)
+
+  doc.setFontSize(11)
+  doc.setTextColor(80, 80, 78)
+  doc.text(title, pageWidth - margin, y - 6, { align: 'right' })
+  doc.setFontSize(9.5)
+  doc.text(subtitle, pageWidth - margin, y + 8, { align: 'right' })
+
+  y += 20
+  doc.setDrawColor(230, 228, 224)
+  doc.line(margin, y, pageWidth - margin, y)
+  return y + 26
+}
+
+// "Generated …" on the left and "Page 1 of 3" on the right, on every page
+function addReportFooters(doc: jsPDF, margin: number) {
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageCount = doc.getNumberOfPages()
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i)
+    const pageHeight = doc.internal.pageSize.getHeight()
+    doc.setFontSize(8)
+    doc.setTextColor(150, 148, 144)
+    doc.text(`Generated ${new Date().toLocaleString('en-US')}`, margin, pageHeight - 24)
+    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 24, { align: 'right' })
+  }
+}
+
+
 // ──────────────────────────────────────────────
 // 9c. EXPORT PDF
 // Builds a real A4 PDF file straight in the browser and downloads it —
@@ -511,27 +562,9 @@ function exportPDF() {
   let y = 50
 
   // ── HEADER ──
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(20)
-  doc.setTextColor(20, 20, 18)
-  doc.text('obello', margin, y)
-  doc.setFontSize(10)
-  doc.setTextColor(120, 120, 115)
-  doc.setFont('helvetica', 'normal')
-  doc.text('POS V2.0', margin + 62, y)
+  y = drawReportHeader(doc, 'Today Business Report', selectedDateLabel.value)
 
-  doc.setFontSize(11)
-  doc.setTextColor(80, 80, 78)
-  doc.text('Today Business Report', pageWidth - margin, y - 6, { align: 'right' })
-  doc.setFontSize(9.5)
-  doc.text(selectedDateLabel.value, pageWidth - margin, y + 8, { align: 'right' })
-
-  y += 20
-  doc.setDrawColor(230, 228, 224)
-  doc.line(margin, y, pageWidth - margin, y)
-  y += 26
-
-  // ── SUMMARY CARDS (as a clean key/value grid) ──
+  // ── SUMMARY (label on the left, value on the right) ──
   const summaryPairs: [string, string][] = [
     ['Sales', fmtRs(todaysSalesTotal.value)],
     ['Cost of Goods', fmtRs(todaysCostTotal.value)],
@@ -543,100 +576,248 @@ function exportPDF() {
   autoTable(doc, {
     startY: y,
     margin: { left: margin, right: margin },
-    theme: 'plain',
+    theme: 'grid',
     body: summaryPairs,
-    styles: { font: 'helvetica', fontSize: 10, cellPadding: 6 },
-    columnStyles: {
-      0: { textColor: [110, 108, 104], cellWidth: 140 },
-      1: { textColor: [20, 20, 18], fontStyle: 'bold' },
-    },
-    didParseCell: (data) => {
-      // Alternate light background per pair for readability
-      if (data.row.index % 2 === 0) data.cell.styles.fillColor = [247, 245, 242]
-    },
+    styles: { ...gridStyles, fontSize: 10, cellPadding: 7 },
+    columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
   })
-  y = (doc as any).lastAutoTable.finalY + 26
+  y = (doc as any).lastAutoTable.finalY + 28
 
-  // ── TRANSACTIONS TABLE ──
+  // ── TRANSACTIONS — each one is a small table, its items in a table right under it ──
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(12)
   doc.setTextColor(20, 20, 18)
   doc.text('Transactions', margin, y)
-  y += 10
+  y += 12
 
-  const txnHead = [['Time', 'Invoice No', 'Cashier', 'Payment', 'Status', 'Items', 'Total (Rs.)']]
-  const txnBody = filteredTransactions.value.map(t => [
-    fmtTime(t.created_at),
-    t.invoice_no,
-    t.users?.full_name || '—',
-    paymentLabel(t.payment_method),
-    t.status,
-    String(itemCountByTxn.value.get(t.id) ?? 0),
-    t.total.toFixed(2),
-  ])
-  autoTable(doc, {
-    startY: y + 6,
-    margin: { left: margin, right: margin },
-    head: txnHead,
-    body: txnBody,
-    theme: 'striped',
-    styles: { font: 'helvetica', fontSize: 9, cellPadding: 6 },
-    headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
-    columnStyles: { 6: { halign: 'right' } },
-  })
-  y = (doc as any).lastAutoTable.finalY + 26
+  const pageH = doc.internal.pageSize.getHeight()
+  filteredTransactions.value.forEach((t, idx) => {
+    const items = itemRows.value.filter(row => row.transaction_id === t.id)
 
-  // ── ITEM-BY-ITEM BREAKDOWN ──
-  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoice_no]))
-  const filteredIds = new Set(filteredTransactions.value.map(t => t.id))
-  const itemBody = itemRows.value
-    .filter(row => filteredIds.has(row.transaction_id))
-    .map(row => [
-      invoiceByTxnId.get(row.transaction_id) || '—',
-      row.product_name,
-      row.sku || '—',
-      row.discount_label || '—',
-      String(row.qty),
-      row.unit_price.toFixed(2),
-      row.line_total.toFixed(2),
-    ])
-
-  if (itemBody.length > 0) {
-    // Start a fresh page if there's not much room left for a heading + a few rows
-    if (y > doc.internal.pageSize.getHeight() - 120) {
+    // Don't leave a transaction heading stranded at the bottom of a page
+    if (y > pageH - 140) {
       doc.addPage()
       y = 50
     }
-    doc.setFont('helvetica', 'bold')
-    doc.setFontSize(12)
-    doc.setTextColor(20, 20, 18)
-    doc.text('Item-by-Item Breakdown', margin, y)
 
+    // 1) The transaction
     autoTable(doc, {
-      startY: y + 10,
+      startY: y,
       margin: { left: margin, right: margin },
-      head: [['Invoice No', 'Product', 'SKU', 'Price Mode', 'Qty', 'Unit Price', 'Line Total']],
-      body: itemBody,
-      theme: 'striped',
-      styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 5 },
-      headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
-      columnStyles: { 4: { halign: 'center' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
+      theme: 'grid',
+      head: [['#', 'Time', 'Invoice No', 'Cashier', 'Payment', 'Status', 'Items', 'Total']],
+      body: [[
+        String(idx + 1),
+        fmtTime(t.created_at),
+        t.invoice_no,
+        t.users?.full_name || '—',
+        paymentLabel(t.payment_method),
+        t.status,
+        String(itemCountByTxn.value.get(t.id) ?? 0),
+        `Rs ${t.total.toFixed(2)}`,
+      ]],
+      styles: gridStyles,
+      headStyles: gridHead,
+      bodyStyles: { fontStyle: 'bold' },
+      columnStyles: { 0: { cellWidth: 24 }, 6: { halign: 'center' }, 7: { halign: 'right' } },
     })
-  }
+    y = (doc as any).lastAutoTable.finalY
 
-  // ── FOOTER on every page ──
-  const pageCount = doc.getNumberOfPages()
-  for (let i = 1; i <= pageCount; i++) {
-    doc.setPage(i)
-    const pageHeight = doc.internal.pageSize.getHeight()
-    doc.setFontSize(8)
-    doc.setTextColor(150, 148, 144)
-    doc.text(`Generated ${new Date().toLocaleString('en-US')}`, margin, pageHeight - 24)
-    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 24, { align: 'right' })
-  }
+    // 2) Its items, directly underneath
+    if (items.length > 0) {
+      autoTable(doc, {
+        startY: y,
+        margin: { left: margin, right: margin },
+        theme: 'grid',
+        head: [['', 'Product', 'SKU', 'Price Mode', 'Qty', 'Unit Price', 'Line Total']],
+        body: items.map((row, i) => [
+          String(i + 1),
+          row.product_name,
+          row.sku || '—',
+          row.discount_label || '—',
+          String(row.qty),
+          row.unit_price.toFixed(2),
+          row.line_total.toFixed(2),
+        ]),
+        styles: { ...gridStyles, fontSize: 8.5, cellPadding: 5 },
+        headStyles: gridHead,
+        columnStyles: { 0: { cellWidth: 24 }, 4: { halign: 'center' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
+      })
+      y = (doc as any).lastAutoTable.finalY
+    }
+    y += 24
+  })
+
+  addReportFooters(doc, margin)
 
   doc.save(`today-business-${selectedDate.value}.pdf`)
   showToastMsg('PDF exported')
+}
+
+
+// ──────────────────────────────────────────────
+// 9d. MONTHLY REPORT
+// Pick any month that has sales data → downloads one PDF for the whole month:
+// summary, day-by-day table, payment methods and top-selling products.
+// ──────────────────────────────────────────────
+const monthBusy = ref(false)
+
+// The month comes from the calendar at the top: pick any day in September
+// and the button builds the September report.
+const selectedMonthKey   = computed(() => selectedDate.value.slice(0, 7)) // 'YYYY-MM'
+const selectedMonthDate  = computed(() => new Date(selectedDate.value + 'T00:00:00'))
+const selectedMonthLabel = computed(() => selectedMonthDate.value.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }))
+const selectedMonthShort = computed(() => selectedMonthDate.value.toLocaleDateString('en-US', { month: 'short' }))
+
+// Supabase returns at most 1000 rows per request — a month can have more,
+// so this keeps asking for the next 1000 until there is nothing left.
+async function fetchAllRows(makeQuery: (from: number, to: number) => any): Promise<any[]> {
+  const pageSize = 1000
+  const all: any[] = []
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await makeQuery(from, from + pageSize - 1)
+    if (error) throw new Error(error.message)
+    all.push(...(data ?? []))
+    if (!data || data.length < pageSize) break
+  }
+  return all
+}
+
+async function exportMonthlyPDF() {
+  const monthKey = selectedMonthKey.value
+  const monthLabel = selectedMonthLabel.value
+  monthBusy.value = true
+  showToastMsg(`Building ${monthLabel} report…`)
+  try {
+    const [y, m] = monthKey.split('-').map(Number)
+    const start = new Date(y, m - 1, 1, 0, 0, 0, 0).toISOString()
+    const end   = new Date(y, m, 0, 23, 59, 59, 999).toISOString()   // day 0 of next month = last day of this one
+
+    // 1) every non-void transaction in the month
+    const monthTxns: Transaction[] = await fetchAllRows((from, to) =>
+      supabase.from('transactions').select('*, users(full_name)')
+        .gte('created_at', start).lte('created_at', end).neq('status', 'void')
+        .order('created_at', { ascending: true }).order('id').range(from, to)
+    )
+    const sales = monthTxns.filter(t => t.status === 'completed')
+
+    // 2) their items, fetched 100 bills at a time (keeps the request small)
+    const ids = sales.map(t => t.id)
+    const monthItems: TransactionItemRow[] = []
+    for (let i = 0; i < ids.length; i += 100) {
+      const chunk = ids.slice(i, i + 100)
+      const rows = await fetchAllRows((from, to) =>
+        supabase.from('transaction_items').select('*, products(cost_price, image_url)')
+          .in('transaction_id', chunk).order('id').range(from, to)
+      )
+      monthItems.push(...(rows as TransactionItemRow[]))
+    }
+
+    // 3) work out the numbers (same rules as the daily report)
+    const costOfTxn = new Map<string, number>()
+    for (const row of monthItems) {
+      costOfTxn.set(row.transaction_id, (costOfTxn.get(row.transaction_id) ?? 0) + (row.products?.cost_price ?? 0) * row.qty)
+    }
+    const totalSales = sales.reduce((s, t) => s + t.total, 0)
+    const totalCost  = sales.reduce((s, t) => s + (costOfTxn.get(t.id) ?? 0), 0)
+    const laterPay   = sales.filter(t => t.payment_method === 'later_pay')
+
+    // day-by-day
+    const days = new Map<string, { count: number; sales: number; cost: number }>()
+    for (const t of sales) {
+      const key = toDateStr(new Date(t.created_at))
+      const d = days.get(key) ?? { count: 0, sales: 0, cost: 0 }
+      d.count += 1; d.sales += t.total; d.cost += costOfTxn.get(t.id) ?? 0
+      days.set(key, d)
+    }
+
+    // by payment method
+    const methods = new Map<string, { count: number; total: number }>()
+    for (const t of sales) {
+      const d = methods.get(t.payment_method) ?? { count: 0, total: 0 }
+      d.count += 1; d.total += t.total
+      methods.set(t.payment_method, d)
+    }
+
+    // top products by quantity
+    const products = new Map<string, { qty: number; total: number }>()
+    for (const row of monthItems) {
+      const d = products.get(row.product_name) ?? { qty: 0, total: 0 }
+      d.qty += row.qty; d.total += row.line_total
+      products.set(row.product_name, d)
+    }
+    const topProducts = [...products.entries()].sort((a, b) => b[1].qty - a[1].qty).slice(0, 10)
+
+    // 4) draw the PDF
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const margin = 40
+    let y0 = drawReportHeader(doc, 'Monthly Business Report', monthLabel)
+
+    const heading = (text: string) => {
+      if (y0 > doc.internal.pageSize.getHeight() - 120) { doc.addPage(); y0 = 50 }
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(20, 20, 18)
+      doc.text(text, margin, y0)
+      y0 += 10
+    }
+    const table = (opts: Record<string, any>) => {
+      autoTable(doc, {
+        startY: y0, margin: { left: margin, right: margin }, theme: 'grid',
+        styles: gridStyles, headStyles: gridHead, ...opts,
+      })
+      y0 = (doc as any).lastAutoTable.finalY + 26
+    }
+
+    table({
+      body: [
+        ['Sales', fmtRs(totalSales)],
+        ['Cost of Goods', fmtRs(totalCost)],
+        ['Profit', fmtRs(totalSales - totalCost)],
+        ['Sales Count', String(sales.length)],
+        ['Later Pay Orders', String(laterPay.length)],
+        ['Later Pay Owed', fmtRs(laterPay.reduce((s, t) => s + t.total, 0))],
+      ],
+      styles: { ...gridStyles, fontSize: 10, cellPadding: 7 },
+      columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
+    })
+
+    heading('Day by day')
+    table({
+      head: [['Date', 'Sales', 'Sales (Rs.)', 'Cost (Rs.)', 'Profit (Rs.)']],
+      body: [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, d]) => [
+        new Date(key + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
+        String(d.count), d.sales.toFixed(2), d.cost.toFixed(2), (d.sales - d.cost).toFixed(2),
+      ]),
+      foot: [['Total', String(sales.length), totalSales.toFixed(2), totalCost.toFixed(2), (totalSales - totalCost).toFixed(2)]],
+      footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
+      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+    })
+
+    heading('Payment methods')
+    table({
+      head: [['Method', 'Sales', 'Total (Rs.)']],
+      body: [...methods.entries()].map(([method, d]) => [paymentLabel(method), String(d.count), d.total.toFixed(2)]),
+      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' } },
+    })
+
+    if (topProducts.length > 0) {
+      heading('Top selling products')
+      table({
+        head: [['#', 'Product', 'Qty sold', 'Total (Rs.)']],
+        body: topProducts.map(([name, d], i) => [String(i + 1), name, String(d.qty), d.total.toFixed(2)]),
+        columnStyles: { 0: { cellWidth: 24 }, 2: { halign: 'center' }, 3: { halign: 'right' } },
+      })
+    }
+
+    addReportFooters(doc, margin)
+    doc.save(`monthly-business-${monthKey}.pdf`)
+    showToastMsg('Monthly PDF exported')
+  } catch (e) {
+    console.error('Monthly report error:', e)
+    showToastMsg('⚠️ Could not build the monthly report')
+  } finally {
+    monthBusy.value = false
+  }
 }
 
 
@@ -794,6 +975,11 @@ onMounted(() => {
           <button class="btn btn-outline" @click="exportCSV" title="Download CSV">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
             Export CSV
+          </button>
+          <!-- Monthly report: always for the month of the date picked in the calendar above -->
+          <button class="btn btn-outline" :disabled="monthBusy" @click="exportMonthlyPDF" :title="`Download the full ${selectedMonthLabel} report`">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+            {{ monthBusy ? 'Building…' : `Monthly Report · ${selectedMonthShort}` }}
           </button>
           <button class="btn btn-primary" @click="exportPDF" title="Download PDF">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
