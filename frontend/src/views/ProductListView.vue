@@ -348,6 +348,11 @@ const statTotal = computed(() => products.value.length)
 const statLow   = computed(() => products.value.filter(p => p.stock <= 1).length)
 const statCats  = computed(() => new Set(products.value.map(p => p.main_category).filter(Boolean)).size)
 
+// Discount value of everything in stock: discount × stock for each product, all added together
+// (Number() guards against text or empty values)
+const statDiscountTotal      = computed(() => products.value.reduce((sum, p) => sum + (Number(p.discount) || 0) * (Number(p.stock) || 0), 0))
+const statSuperDiscountTotal = computed(() => products.value.reduce((sum, p) => sum + (Number(p.super_discount) || 0) * (Number(p.stock) || 0), 0))
+
 
 // ──────────────────────────────────────────────
 // 10. HELPER FUNCTIONS
@@ -356,6 +361,11 @@ const statCats  = computed(() => new Set(products.value.map(p => p.main_category
 // Format price as "1,150.00"
 function fmt(n: number): string {
   return parseFloat(String(n)).toFixed(2)
+}
+
+// Format price with commas and 2 decimals: 2457865 → "2,457,865.00"
+function fmtMoney(n: number): string {
+  return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
 // Format date "2026-01-29T..." → "29/01/2026"
@@ -596,6 +606,28 @@ onMounted(() => {
           <div class="stat-label">Categories</div>
           <div class="stat-value">{{ statCats }}</div>
           <div class="stat-sub">active</div>
+        </div>
+        <!-- Discount totals (two values in one card) -->
+        <div class="stat-card">
+          <div class="stat-label">Discount Totals</div>
+          <div class="stat-pair">
+            <!-- Discount: green circle -->
+            <div class="pair-item">
+              <span class="dot dot-green"></span>
+              <div class="pair-text">
+                <div class="pair-name">Discount total</div>
+                <div class="pair-value green">{{ fmtMoney(statDiscountTotal) }}</div>
+              </div>
+            </div>
+            <!-- Super discount: purple circle -->
+            <div class="pair-item">
+              <span class="dot dot-purple"></span>
+              <div class="pair-text">
+                <div class="pair-name">Super discount total</div>
+                <div class="pair-value purple">{{ fmtMoney(statSuperDiscountTotal) }}</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -893,6 +925,8 @@ onMounted(() => {
   --red-bg:    rgba(220,38,38,.18);
   --green:     #4ade80;
   --green-bg:  rgba(22,163,74,.15);
+  --purple:    #a78bfa;
+  --purple-bg: rgba(139,92,246,.2);
   --shadow:    0 1px 3px rgba(0,0,0,.5);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.6);
   --radius:    12px;
@@ -913,6 +947,8 @@ onMounted(() => {
   --red-bg:    #fee2e2;
   --green:     #16a34a;
   --green-bg:  #dcfce7;
+  --purple:    #7c3aed;
+  --purple-bg: #ede9fe;
   --shadow:    0 1px 3px rgba(0,0,0,.08), 0 4px 16px rgba(0,0,0,.04);
   --shadow-lg: 0 8px 32px rgba(0,0,0,0.1);
 }
@@ -974,6 +1010,17 @@ onMounted(() => {
 .stat-label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
 .stat-value { font-size: 22px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; font-family: 'DM Mono', monospace; color: var(--text); }
 .stat-value.low { color: var(--red); }
+.stat-value.green { color: var(--green); }
+/* Discount card: two stacked items, each = coloured circle + name + value underneath */
+.stat-pair { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.pair-item { display: flex; align-items: center; gap: 12px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.dot-green  { background: var(--green);  box-shadow: 0 0 0 4px var(--green-bg); }
+.dot-purple { background: var(--purple); box-shadow: 0 0 0 4px var(--purple-bg); }
+.pair-name  { font-size: 11px; color: var(--text-sub); }
+.pair-value { font-size: 18px; font-weight: 600; letter-spacing: -.02em; font-family: 'DM Mono', monospace; line-height: 1.2; }
+.pair-value.green  { color: var(--green); }
+.pair-value.purple { color: var(--purple); }
 .stat-sub { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
 
 

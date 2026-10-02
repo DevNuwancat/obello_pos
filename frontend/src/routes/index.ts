@@ -28,6 +28,8 @@ const router = createRouter({
 
         { path: '/pay-later', name: 'pay-later', component: () => import('../views/PayLaterView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
+        { path: '/customer-holds', name: 'customer-holds', component: () => import('../views/CustomerHolds.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager', 'cashier'] } },
+
         { path: '/return-bin', name: 'return-bin', component: () => import('../views/ReturnBinView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
     ]
 })

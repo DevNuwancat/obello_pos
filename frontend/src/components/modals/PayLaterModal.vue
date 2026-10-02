@@ -17,7 +17,10 @@ const props = defineProps<{
   modelValue: boolean
   isLight: boolean
   orderTotal: number       // total Rs. of the current cart
+  mode?: 'later' | 'hold'  // 'hold' = Customer Hold (no bill, no print toggle)
 }>()
+
+const isHold = computed(() => props.mode === 'hold')
 
 const emit = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
@@ -197,8 +200,8 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
           <!-- HEADER -->
           <div class="modal-header">
             <div>
-              <div class="modal-title">Pay Later Checkout</div>
-              <div class="modal-sub">Select a customer · bill total {{ fmtRs(props.orderTotal) }}</div>
+              <div class="modal-title">{{ isHold ? 'Customer Hold' : 'Pay Later Checkout' }}</div>
+              <div class="modal-sub">Select a customer · {{ isHold ? 'items value' : 'bill total' }} {{ fmtRs(props.orderTotal) }}</div>
             </div>
             <div class="header-right">
               <button class="btn-register" @click="goRegister">
@@ -277,7 +280,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
           <!-- FOOTER -->
           <div class="modal-footer">
             <div class="footer-left">
-              <div class="print-row" @click="printBill = !printBill">
+              <div v-if="!isHold" class="print-row" @click="printBill = !printBill">
                 <div class="checkbox" :class="{ checked: printBill }">
                   <svg v-if="printBill" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
                 </div>
@@ -291,7 +294,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
                 :disabled="!selectedId"
                 @click="confirm"
               >
-                {{ selectedCustomer ? `Pay Later · ${selectedCustomer.name}` : 'Select a Customer' }}
+                {{ selectedCustomer ? `${isHold ? 'Hold' : 'Pay Later'} · ${selectedCustomer.name}` : 'Select a Customer' }}
               </button>
             </div>
           </div>
@@ -312,7 +315,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
               </button>
               <div>
                 <div class="modal-title">Register Customer</div>
-                <div class="modal-sub">Add a new Pay Later customer</div>
+                <div class="modal-sub">Add a new customer</div>
               </div>
             </div>
             <button class="modal-close" @click="close">

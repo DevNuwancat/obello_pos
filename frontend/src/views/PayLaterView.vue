@@ -356,12 +356,30 @@ const editAmount        = ref('')
 const editReason        = ref('')
 const editError         = ref('')
 const editSaving        = ref(false)
+const removeMode        = ref(false)   // true = the modal is asking "remove this whole payment?" instead of "correct the amount"
+
+// A removed payment is one that was corrected down to Rs. 0 — it stays in the
+// history (nothing is erased), but no longer counts toward what the customer paid.
+function isRemoved(p: Payment): boolean {
+  return p.amount === 0 && (editsByPayment.value.get(p.id) ?? []).some(e => e.new_amount === 0)
+}
+// Who removed it (the person logged in when they pressed Remove)
+function removedBy(p: Payment): string {
+  const removal = (editsByPayment.value.get(p.id) ?? []).find(e => e.new_amount === 0)
+  return removal?.users?.full_name || 'Unknown user'
+}
+// What the removed payment used to be, shown crossed out
+function removedAmount(p: Payment): number {
+  const removal = (editsByPayment.value.get(p.id) ?? []).find(e => e.new_amount === 0)
+  return removal?.old_amount ?? 0
+}
 
 function openEditPayment(p: Payment) {
   editingPayment.value = p
   editAmount.value     = String(p.amount)   // start from the current amount, not blank
   editReason.value     = ''
   editError.value      = ''
+  removeMode.value     = false
   showEditPayModal.value = true
 }
 
@@ -379,20 +397,34 @@ async function submitEditPayment() {
   if (newAmount === oldAmount) { editError.value = 'New amount is the same as before'; return }
   if (!editReason.value.trim()) { editError.value = 'Please explain why this is being changed'; return }
 
+  await savePaymentChange(newAmount, 'Payment corrected')
+}
+
+// Removing = the same as a correction, but the new amount is 0 and a reason is a must
+async function submitRemovePayment() {
+  if (!editingPayment.value) return
+  if (!editReason.value.trim()) { editError.value = 'Please explain why this payment is being removed'; return }
+
+  await savePaymentChange(0, 'Payment removed')
+}
+
+// Shared by "correct" and "remove": log it first, then change the payment
+async function savePaymentChange(newAmount: number, toast: string) {
+  if (!editingPayment.value) return
   editSaving.value = true
   editError.value  = ''
 
-  // 1. Save the correction to the logbook first — old amount, new amount, reason, who
+  // 1. Save the change to the logbook first — old amount, new amount, reason, who
   const { error: logError } = await supabase.from('pay_later_payment_edits').insert({
     payment_id: editingPayment.value.id,
-    old_amount: oldAmount,
+    old_amount: editingPayment.value.amount,
     new_amount: newAmount,
     reason: editReason.value.trim(),
     edited_by: auth.user?.id ?? null,
   })
   if (logError) { editSaving.value = false; editError.value = logError.message; return }
 
-  // 2. Then actually change the payment's amount to the corrected value
+  // 2. Then actually change the payment's amount (0 when removed)
   const { error: updError } = await supabase
     .from('pay_later_payments')
     .update({ amount: newAmount })
@@ -404,7 +436,7 @@ async function submitEditPayment() {
 
   closeEditPayModal()
   await fetchAll()
-  showToastMsg('Payment corrected')
+  showToastMsg(toast)
 }
 
 
@@ -885,9 +917,12 @@ onMounted(fetchAll)
                         <div v-for="p in (paymentsByCustomer.get(c.id) ?? [])" :key="p.id" class="payment-block">
                           <div class="payment-row">
                             <span class="payment-date">{{ fmtDate(p.paid_at) }}</span>
-                            <span class="payment-amount">{{ fmtRs(p.amount) }}</span>
-                            <span v-if="p.note" class="payment-note">{{ p.note }}</span>
-                            <button class="btn-edit-payment" title="Correct this payment" @click.stop="openEditPayment(p)">
+                            <span v-if="isRemoved(p)" class="payment-amount payment-amount-removed">{{ fmtRs(removedAmount(p)) }}</span>
+                            <span v-else class="payment-amount">{{ fmtRs(p.amount) }}</span>
+                            <span v-if="isRemoved(p)" class="removed-badge">Removed</span>
+                            <span v-if="isRemoved(p)" class="payment-note">by {{ removedBy(p) }}</span>
+                            <span v-else-if="p.note" class="payment-note">{{ p.note }}</span>
+                            <button v-if="!isRemoved(p)" class="btn-edit-payment" title="Correct or remove this payment" @click.stop="openEditPayment(p)">
                               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
                                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
@@ -896,7 +931,8 @@ onMounted(fetchAll)
                           </div>
                           <!-- Correction trail — every past edit to this payment, in red -->
                           <div v-for="e in (editsByPayment.get(p.id) ?? [])" :key="e.id" class="payment-edit-row">
-                            {{ fmtRs(e.old_amount) }} → {{ fmtRs(e.new_amount) }} - {{ e.reason }}
+                            <template v-if="e.new_amount === 0">Removed {{ fmtRs(e.old_amount) }} - {{ e.reason }}</template>
+                            <template v-else>{{ fmtRs(e.old_amount) }} → {{ fmtRs(e.new_amount) }} - {{ e.reason }}</template>
                             <span class="payment-edit-by">· by {{ e.users?.full_name || 'Unknown user' }}</span>
                           </div>
                         </div>
@@ -973,7 +1009,7 @@ onMounted(fetchAll)
         <div class="modal-box">
           <div class="modal-header">
             <div>
-              <div class="modal-title">Correct Payment</div>
+              <div class="modal-title">{{ removeMode ? 'Remove Payment' : 'Correct Payment' }}</div>
               <div class="modal-sub">Currently {{ fmtRs(editingPayment?.amount ?? 0) }} · {{ fmtDate(editingPayment?.paid_at ?? null) }}</div>
             </div>
             <button class="modal-close" @click="closeEditPayModal">
@@ -982,7 +1018,11 @@ onMounted(fetchAll)
           </div>
 
           <div class="modal-body">
-            <div class="form-field">
+            <div v-if="removeMode" class="remove-warning">
+              This takes {{ fmtRs(editingPayment?.amount ?? 0) }} off what this customer has paid, so their balance goes back up.
+              The payment stays in the history, marked as removed.
+            </div>
+            <div v-if="!removeMode" class="form-field">
               <label class="form-label">Correct Amount <span class="req">*</span></label>
               <div class="input-prefix-wrap">
                 <span class="input-prefix">Rs.</span>
@@ -990,16 +1030,20 @@ onMounted(fetchAll)
               </div>
             </div>
             <div class="form-field">
-              <label class="form-label">Reason for change <span class="req">*</span></label>
-              <textarea v-model="editReason" class="form-input textarea" rows="3" placeholder="e.g. Cashier typed the wrong amount" />
+              <label class="form-label">{{ removeMode ? 'Reason for removing' : 'Reason for change' }} <span class="req">*</span></label>
+              <textarea v-model="editReason" class="form-input textarea" rows="3" :placeholder="removeMode ? 'e.g. Added to the wrong customer by mistake' : 'e.g. Cashier typed the wrong amount'" />
               <span class="form-hint-text">This is saved permanently and shown in the payment history.</span>
             </div>
             <div v-if="editError" class="save-error">{{ editError }}</div>
           </div>
 
           <div class="modal-footer">
-            <button class="modal-cancel" :disabled="editSaving" @click="closeEditPayModal">Cancel</button>
-            <button class="modal-save" :disabled="editSaving" @click="submitEditPayment">
+            <button v-if="!removeMode" class="modal-remove-link" :disabled="editSaving" @click="removeMode = true; editError = ''">Remove payment</button>
+            <button class="modal-cancel" :disabled="editSaving" @click="removeMode ? (removeMode = false, editError = '') : closeEditPayModal()">{{ removeMode ? 'Back' : 'Cancel' }}</button>
+            <button v-if="removeMode" class="modal-save modal-save-danger" :disabled="editSaving" @click="submitRemovePayment">
+              {{ editSaving ? 'Removing…' : 'Remove Payment' }}
+            </button>
+            <button v-else class="modal-save" :disabled="editSaving" @click="submitEditPayment">
               {{ editSaving ? 'Saving…' : 'Save Correction' }}
             </button>
           </div>
@@ -1299,6 +1343,14 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 }
 .payment-edit-by { color: var(--text-muted); font-style: italic; }
 
+/* Removed payment — original amount crossed out, red "Removed" tag */
+.payment-amount-removed { color: var(--text-muted); text-decoration: line-through; }
+.removed-badge {
+  padding: 2px 8px; border-radius: 5px; font-size: 9px; font-weight: 600;
+  letter-spacing: .03em; text-transform: uppercase; flex-shrink: 0;
+  border: 1px solid var(--red); background: var(--red-bg); color: var(--red);
+}
+
 
 /* ══════════════════════════════════
    MODALS (Pay + Add Customer)
@@ -1381,6 +1433,10 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .modal-save { padding: 10px 24px; border-radius: 9px; border: none; background: var(--accent-bg); color: var(--accent-text); font-size: 13px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; min-width: 120px; transition: opacity 0.15s; }
 .modal-save:hover { opacity: 0.85; }
 .modal-save:disabled { opacity: 0.5; cursor: not-allowed; }
+.modal-save-danger { background: #dc2626; color: #fff; }
+.modal-remove-link { margin-right: auto; background: none; border: none; padding: 10px 4px; font-size: 13px; font-family: 'DM Sans', sans-serif; color: #f87171; cursor: pointer; }
+.modal-remove-link:hover:not(:disabled) { text-decoration: underline; }
+.remove-warning { padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.5; color: #f87171; background: rgba(220,38,38,.12); border: 1px solid rgba(220,38,38,.3); }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }

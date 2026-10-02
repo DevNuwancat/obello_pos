@@ -24,6 +24,7 @@ interface FoundItem {
   pendingReturnQty: number // qty of this same item already sitting in the return bin, not yet processed
   availableQty: number    // qty - pendingReturnQty — the real ceiling for a new return
   image_url: string | null
+  unit_price: number     // what the customer actually paid per unit (line_total / qty)
 }
 
 const foundItems  = ref<FoundItem[]>([])
@@ -51,7 +52,7 @@ async function searchInvoice() {
 
     const { data: items, error: itemsError } = await supabase
       .from('transaction_items')
-      .select('id, transaction_id, product_id, product_name, sku, qty, products(image_url)')
+      .select('id, transaction_id, product_id, product_name, sku, qty, line_total, products(image_url)')
       .eq('transaction_id', txn.id)
 
     if (itemsError) { searchError.value = itemsError.message; return }
@@ -86,6 +87,7 @@ async function searchInvoice() {
         pendingReturnQty: pendingQty,
         availableQty: Math.max(0, i.qty - pendingQty),
         image_url: i.products?.image_url ?? null,
+        unit_price: i.qty > 0 ? Number(i.line_total) / i.qty : 0,
       }
     })
 
@@ -166,6 +168,22 @@ async function save() {
     const { error } = await supabase.from('product_returns').insert(rows)
 
     if (error) { saveError.value = error.message; return }
+
+    // Permanent record for Today Business (the bin deletes rows once processed)
+    const logRows = picked.map(item => {
+      const qty = selectedQty.value.get(item.id) ?? 1
+      return {
+        product_id:     item.product_id,
+        transaction_id: item.transaction_id,
+        invoice_no:     foundInvoice.value,
+        product_name:   item.product_name,
+        sku:            item.sku,
+        qty,
+        amount:         Math.round(item.unit_price * qty * 100) / 100,
+      }
+    })
+    const { error: logError } = await supabase.from('return_log').insert(logRows)
+    if (logError) console.warn('Could not write return log:', logError.message)
   } catch {
     saveError.value = 'Something went wrong. Please try again.'
   } finally {

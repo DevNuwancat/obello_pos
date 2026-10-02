@@ -151,8 +151,24 @@ async function fetchReportData() {
   }
 }
 
+// ── Returned items for the selected day (from the permanent "return_log") ──
+const returnedCount  = ref(0)   // total units returned
+const returnedAmount = ref(0)   // total Rs. those units were sold for
+
+async function fetchReturns() {
+  const { start, end } = dayRange(selectedDate.value)
+  const { data, error } = await supabase
+    .from('return_log')
+    .select('qty, amount')
+    .gte('returned_at', start)
+    .lte('returned_at', end)
+  if (error) { console.error('Return log fetch error:', error); returnedCount.value = 0; returnedAmount.value = 0; return }
+  returnedCount.value  = (data ?? []).reduce((s, r) => s + r.qty, 0)
+  returnedAmount.value = (data ?? []).reduce((s, r) => s + Number(r.amount), 0)
+}
+
 // Reload the report whenever the selected date changes
-watch(selectedDate, fetchReportData)
+watch(selectedDate, () => { fetchReportData(); fetchReturns() })
 
 
 // ──────────────────────────────────────────────
@@ -427,75 +443,8 @@ function paymentLabel(method: string): string {
 // ──────────────────────────────────────────────
 function refreshData() {
   fetchReportData()
+  fetchReturns()
   fetchAvailableDates()
-}
-
-
-// ──────────────────────────────────────────────
-// 9b. EXPORT CSV
-// Exports whatever is currently visible in the table (respects the
-// payment-method filter), plus a summary block of the cards at the top.
-// ──────────────────────────────────────────────
-function exportCSV() {
-  const summary = [
-    ['Today Business Report'],
-    [selectedDateLabel.value],
-    [],
-    ['Sales', fmtRs(todaysSalesTotal.value)],
-    ['Cost of Goods', fmtRs(todaysCostTotal.value)],
-    ['Profit', fmtRs(todaysProfit.value)],
-    ['Sales Count', String(todaysSalesCount.value)],
-    ['Later Pay Count', String(laterPayCount.value)],
-    ['Later Pay Total', fmtRs(laterPayTotal.value)],
-    [],
-  ]
-
-  const headers = ['Invoice No', 'Time', 'Cashier', 'Payment', 'Status', 'Printed', 'Bill Discount %', 'Items', 'Subtotal', 'Discount Rs.', 'Total']
-  const rows = filteredTransactions.value.map(t => [
-    t.invoice_no,
-    fmtTime(t.created_at),
-    t.users?.full_name || '—',
-    paymentLabel(t.payment_method),
-    t.status,
-    t.printed_receipt ? 'Yes' : 'No',
-    t.discount_percent > 0 ? `${t.discount_percent}%` : '—',
-    String(itemCountByTxn.value.get(t.id) ?? 0),
-    t.subtotal.toFixed(2),
-    t.discount_amount.toFixed(2),
-    t.total.toFixed(2),
-  ])
-
-  // Item-by-item breakdown — every product sold today, one row each,
-  // tagged with which invoice it belongs to.
-  const itemSection = [
-    [],
-    ['Item-by-Item Breakdown'],
-    ['Invoice No', 'Product Name', 'SKU', 'Price Mode', 'Qty', 'Unit Price', 'Line Total'],
-  ]
-  const filteredIds = new Set(filteredTransactions.value.map(t => t.id))
-  const invoiceByTxnId = new Map(filteredTransactions.value.map(t => [t.id, t.invoice_no]))
-  const itemRowsOut = itemRows.value
-    .filter(row => filteredIds.has(row.transaction_id))
-    .map(row => [
-      invoiceByTxnId.get(row.transaction_id) || '—',
-      row.product_name,
-      row.sku || '—',
-      row.discount_label || '—',
-      String(row.qty),
-      row.unit_price.toFixed(2),
-      row.line_total.toFixed(2),
-    ])
-
-  const csv = [...summary, headers, ...rows, ...itemSection, ...itemRowsOut]
-    .map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    .join('\n')
-
-  const a = Object.assign(document.createElement('a'), {
-    href: 'data:text/csv,' + encodeURIComponent(csv),
-    download: `today-business-${selectedDate.value}.csv`,
-  })
-  a.click()
-  showToastMsg('CSV exported')
 }
 
 
@@ -551,7 +500,7 @@ function addReportFooters(doc: jsPDF, margin: number) {
 
 
 // ──────────────────────────────────────────────
-// 9c. EXPORT PDF
+// 9c. DAILY REPORT (PDF)
 // Builds a real A4 PDF file straight in the browser and downloads it —
 // no print dialog, no "Save as PDF" step. Uses jsPDF + autoTable.
 // ──────────────────────────────────────────────
@@ -571,6 +520,8 @@ function exportPDF() {
     ['Sales Count', String(todaysSalesCount.value)],
     ['Later Pay Orders', String(laterPayCount.value)],
     ['Later Pay Owed', fmtRs(laterPayTotal.value)],
+    ['Returned Items', String(returnedCount.value)],
+    ['Returned Amount', fmtRs(returnedAmount.value)],
   ]
   autoTable(doc, {
     startY: y,
@@ -837,6 +788,7 @@ function showToastMsg(msg: string) {
 // ──────────────────────────────────────────────
 onMounted(() => {
   fetchReportData()
+  fetchReturns()
   fetchAvailableDates()
 })
 </script>
@@ -948,6 +900,12 @@ onMounted(() => {
           <div class="stat-value">{{ laterPayCount }} <span class="stat-value-sub">order{{ laterPayCount === 1 ? '' : 's' }}</span></div>
           <div class="stat-sub">{{ fmtRs(laterPayTotal) }} sold on credit · already in Sales above</div>
         </div>
+        <!-- Returned items — units brought back this day and their value -->
+        <div class="stat-card return-card">
+          <div class="stat-label">Returned Items</div>
+          <div class="stat-value">{{ returnedCount }} <span class="stat-value-sub">item{{ returnedCount === 1 ? '' : 's' }}</span></div>
+          <div class="stat-sub">{{ fmtRs(returnedAmount) }} returned {{ isViewingToday ? 'today' : 'this day' }}</div>
+        </div>
       </div>
 
       <!-- ── TOOLBAR (payment filter + refresh) ── -->
@@ -970,18 +928,14 @@ onMounted(() => {
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-6.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Refresh
           </button>
-          <button class="btn btn-outline" @click="exportCSV" title="Download CSV">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-            Export CSV
+          <button class="btn btn-primary" @click="exportPDF" title="Download today's report as PDF">
+            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
+            Daily Report
           </button>
           <!-- Monthly report: always for the month of the date picked in the calendar above -->
           <button class="btn btn-outline" :disabled="monthBusy" @click="exportMonthlyPDF" :title="`Download the full ${selectedMonthLabel} report`">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
             {{ monthBusy ? 'Building…' : `Monthly Report · ${selectedMonthShort}` }}
-          </button>
-          <button class="btn btn-primary" @click="exportPDF" title="Download PDF">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
-            Export PDF
           </button>
         </div>
       </div>
@@ -1287,6 +1241,7 @@ onMounted(() => {
 }
 
 .stat-card.later-card { border-color: var(--amber-bg); }
+.stat-card.return-card { border-color: var(--red-bg); }
 
 .stat-label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
 .stat-value { font-size: 22px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; font-family: 'DM Mono', monospace; color: var(--text); }

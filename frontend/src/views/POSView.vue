@@ -89,11 +89,24 @@ const printReceipt = ref(true)
 const checkoutDone = ref(false)
 const checkingOut  = ref(false)
 const showPayLaterModal = ref(false)
+const showHoldModal     = ref(false)
+const creatingHold      = ref(false)
+
+// Payment methods that never print a receipt from the main cart
+// Little icons for the payment method buttons (SVG inner shapes)
+const payIcons: Record<string, string> = {
+  'Cash':      '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/>',
+  'Card':      '<rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/>',
+  'Bank':      '<path d="M3 10l9-6 9 6"/><line x1="5" y1="10" x2="5" y2="18"/><line x1="12" y1="10" x2="12" y2="18"/><line x1="19" y1="10" x2="19" y2="18"/><line x1="3" y1="20" x2="21" y2="20"/>',
+  'Later Pay': '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
+}
+
+const noReceiptMethod = computed(() => payMethod.value === 'Later Pay' || payMethod.value === 'Customer Hold')
 
 // When Later Pay is selected, turn off "Print with Receipt" automatically —
 // you can still toggle it on manually in the Pay Later modal itself.
 watch(payMethod, (method) => {
-  if (method === 'Later Pay') printReceipt.value = false
+  if (method === 'Later Pay' || method === 'Customer Hold') printReceipt.value = false
 })
 const toastMsg    = ref('')
 const toastVisible = ref(false)
@@ -154,6 +167,7 @@ const totalQty    = computed(() => cart.value.reduce((s, i) => s + i.qty, 0))
 const canCheckout = computed(() => {
   if (cart.value.length === 0 || checkoutDone.value) return false
   if (payMethod.value === 'Later Pay') return true
+  if (payMethod.value === 'Customer Hold') return true // no payment needed, items are only reserved
   return amountPaid.value > 0 && amountPaid.value >= total.value
 })
 
@@ -172,8 +186,10 @@ function showToast(msg: string) {
 function addToCart(product: Product) {
   const existing = cart.value.find(i => i.id === product.id)
   if (existing) {
-    if (existing.qty >= product.stock) {
-      showToast(`Only ${product.stock} in stock`)
+    // Held items are already out of stock, so they raise the ceiling for their line
+    const maxQty = product.stock + (existing.holdQty || 0)
+    if (existing.qty >= maxQty) {
+      showToast(`Only ${maxQty} available`)
       return
     }
     existing.qty++
@@ -200,21 +216,162 @@ function updateQty(id: string, delta: number) {
   const item = cart.value.find(i => i.id === id)
   if (!item) return
   const product = PRODUCTS.value.find(p => p.id === id)
-  const maxStock = product ? product.stock : item.stock
+  const maxStock = (product ? product.stock : item.stock) + (item.holdQty || 0)
   if (delta > 0 && item.qty >= maxStock) {
-    showToast(`Only ${maxStock} in stock`)
+    showToast(`Only ${maxStock} available`)
     return
   }
-  item.qty = Math.max(0, item.qty + delta)
+  const newQty = Math.max(0, item.qty + delta)
+  // Lowering a held line below its reserved qty = customer is not taking those → put back in stock
+  if (item.fromHold && newQty < (item.holdQty || 0)) {
+    releaseHeld(item, (item.holdQty || 0) - newQty)
+  }
+  item.qty = newQty
   if (item.qty === 0) cart.value = cart.value.filter(i => i.id !== id)
 }
 
 function removeItem(id: string) {
+  const item = cart.value.find(i => i.id === id)
+  if (item?.fromHold && item.holdQty > 0) releaseHeld(item, item.holdQty)
   cart.value = cart.value.filter(i => i.id !== id)
 }
 
+// "Clear" just empties the cart — held lines stay reserved on the hold (nothing is restocked)
 function clearCart() {
   cart.value = []
+}
+
+// ── CUSTOMER HOLDS ──
+// Put `qty` of a held cart line back into stock and mark it cancelled on the hold.
+async function releaseHeld(item: any, qty: number) {
+  if (qty <= 0) return
+  item.holdQty -= qty
+  item.holdCancelled += qty
+  const product = PRODUCTS.value.find(p => p.id === item.id)
+  if (product) {
+    product.stock += qty
+    await supabase.from('products').update({ stock: product.stock }).eq('id', product.id)
+  }
+  await supabase.from('customer_hold_items')
+    .update({ qty_cancelled: item.holdCancelled })
+    .eq('id', item.holdItemId)
+  showToast(`${qty} × ${item.name} released back to stock`)
+}
+
+// Create a hold from the current cart: save it, then take the items out of stock.
+// No transaction (sale) is created, so nothing shows in Today Business and nothing prints.
+async function onHoldConfirm(payload: { customerId: string }) {
+  showHoldModal.value = false
+  if (cart.value.some(i => i.fromHold)) {
+    showToast('Items from a hold cannot be held again')
+    return
+  }
+  creatingHold.value = true
+  try {
+    // Same customer already has items waiting? Add the new items to that hold
+    // (so they stay under one name) instead of making a second hold.
+    const { data: existingHolds } = await supabase
+      .from('customer_holds')
+      .select('id, customer_hold_items(qty_held, qty_sold, qty_cancelled)')
+      .eq('customer_id', payload.customerId)
+      .order('created_at', { ascending: false })
+    const openHold = (existingHolds ?? []).find((h: any) =>
+      h.customer_hold_items.some((i: any) => i.qty_held - i.qty_sold - i.qty_cancelled > 0))
+
+    let hold: { id: string } | null = openHold ? { id: openHold.id } : null
+    const createdNew = !hold
+    if (!hold) {
+      const { data: newHold, error: holdError } = await supabase
+        .from('customer_holds')
+        .insert({ customer_id: payload.customerId, created_by: auth.user?.id ?? null })
+        .select()
+        .single()
+      if (holdError || !newHold) {
+        showToast('Hold failed: ' + (holdError?.message ?? 'unknown error'))
+        return
+      }
+      hold = newHold
+    }
+
+    const rows = cart.value.map(item => ({
+      hold_id: hold!.id,
+      product_id: item.id,
+      product_name: item.name,
+      sku: item.sku,
+      image_url: item.image_url,
+      unit_price: item.activePrice,
+      selling_price: item.selling_price,
+      discount_label: discountLabel(item.priceMode),
+      qty_held: item.qty,
+    }))
+    const { error: itemsError } = await supabase.from('customer_hold_items').insert(rows)
+    if (itemsError) {
+      if (createdNew) await supabase.from('customer_holds').delete().eq('id', hold.id)
+      showToast('Hold failed: ' + itemsError.message)
+      return
+    }
+
+    // Take the held qty out of stock right away
+    const updates = cart.value.map(item => {
+      const product = PRODUCTS.value.find(p => p.id === item.id)
+      const newStock = Math.max(0, (product ? product.stock : item.stock) - item.qty)
+      return supabase.from('products').update({ stock: newStock }).eq('id', item.id)
+        .then(({ error }) => {
+          if (!error && product) product.stock = newStock
+          return error
+        })
+    })
+    const failed = (await Promise.all(updates)).find(e => e)
+    if (failed) {
+      showToast('Stock update failed: ' + failed.message)
+      return
+    }
+
+    cart.value = []
+    discount.value = 0
+    amountPaid.value = 0
+    payMethod.value = 'Cash'
+    showToast('Items held for customer')
+  } finally {
+    creatingHold.value = false
+  }
+}
+
+// "Continue in Cart" on the Customer Holds page opens /?hold=<id>.
+// Load every remaining item of that hold into the cart. Stock is NOT touched here.
+async function loadHoldIntoCart(holdId: string) {
+  const { data, error } = await supabase
+    .from('customer_hold_items')
+    .select('*')
+    .eq('hold_id', holdId)
+  if (error) { showToast('Could not load hold: ' + error.message); return }
+
+  let loaded = 0
+  for (const h of data ?? []) {
+    const remaining = h.qty_held - h.qty_sold - h.qty_cancelled
+    if (remaining <= 0) continue
+    if (cart.value.some(i => i.holdItemId === h.id)) continue // already loaded
+    const product = PRODUCTS.value.find(p => p.id === h.product_id)
+    const mode = h.discount_label === 'Super' ? 'royal' : h.discount_label === 'Original' ? 'original' : 'discount'
+    cart.value.unshift({
+      // fall back to the saved hold details if the product was deleted
+      ...(product ?? {
+        id: h.product_id, name: h.product_name, sku: h.sku, barcode: null,
+        selling_price: h.selling_price, discount: h.unit_price, super_discount: h.unit_price,
+        stock: 0, image_url: h.image_url, main_category: null,
+      }),
+      qty: remaining,
+      priceMode: mode,
+      activePrice: h.unit_price, // price agreed when the item was held
+      fromHold: true,
+      holdItemId: h.id,
+      holdQty: remaining,
+      holdSold: h.qty_sold,
+      holdCancelled: h.qty_cancelled,
+    })
+    loaded++
+  }
+  showToast(loaded ? `${loaded} held item(s) loaded into cart` : 'Nothing left to collect on this hold')
 }
 
 // ── BARCODE ──
@@ -275,6 +432,8 @@ function initiateCheckout() {
   if (!canCheckout.value) return
   if (payMethod.value === 'Later Pay') {
     showPayLaterModal.value = true
+  } else if (payMethod.value === 'Customer Hold') {
+    showHoldModal.value = true
   } else {
     handleCheckout()
   }
@@ -342,9 +501,13 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
     }
 
     // 3. Reduce stock for every product sold
+    //    Held items were already taken out of stock when the hold was made,
+    //    so only the extra qty beyond the held qty is deducted here.
     const updates = cart.value.map(item => {
       const product = PRODUCTS.value.find(p => p.id === item.id)
-      const newStock = Math.max(0, (product ? product.stock : item.stock) - item.qty)
+      const deductQty = item.qty - (item.holdQty || 0)
+      if (deductQty <= 0) return Promise.resolve(null)
+      const newStock = Math.max(0, (product ? product.stock : item.stock) - deductQty)
       return supabase.from('products').update({ stock: newStock }).eq('id', item.id)
         .then(({ error }) => {
           if (!error && product) product.stock = newStock
@@ -355,6 +518,19 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
     const failed = results.find(e => e)
     if (failed) {
       showToast('Stock update failed: ' + failed.message)
+      return
+    }
+
+    // 3b. Mark the held qty as collected (sold) on the hold
+    const holdUpdates = cart.value
+      .filter(item => item.fromHold && item.holdQty > 0)
+      .map(item => supabase.from('customer_hold_items')
+        .update({ qty_sold: item.holdSold + item.holdQty })
+        .eq('id', item.holdItemId))
+    const holdResults = await Promise.all(holdUpdates)
+    const holdFailed = holdResults.find(r => r.error)
+    if (holdFailed?.error) {
+      showToast('Hold update failed: ' + holdFailed.error.message)
       return
     }
 
@@ -415,9 +591,15 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
 }
 
 // ── INIT ──
-onMounted(() => {
-  fetchProducts()
+onMounted(async () => {
+  await fetchProducts()
   focusBarcodeInput()
+  // Opened from Customer Holds → "Continue in Cart"
+  const holdId = new URLSearchParams(window.location.search).get('hold')
+  if (holdId) {
+    await loadHoldIntoCart(holdId)
+    window.history.replaceState({}, '', window.location.pathname) // so a page refresh doesn't reload it
+  }
 })
 </script>
 
@@ -618,26 +800,44 @@ onMounted(() => {
       <div class="payment-area">
         <div class="pay-label">Payment Method</div>
         <div class="pay-methods">
+          <!-- Real payment methods: 2 × 2 grid -->
           <div
             v-for="method in ['Cash', 'Card', 'Bank', 'Later Pay']"
             :key="method"
             class="pay-chip"
             :class="{ active: payMethod === method }"
             @click="payMethod = method"
-          >{{ method }}</div>
+          >
+            <svg class="pay-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="payIcons[method]"></svg>
+            {{ method }}
+          </div>
+
+          <!-- Customer Hold: not a payment, so it sits on its own full-width row -->
+          <div
+            class="pay-chip pay-chip-hold"
+            :class="{ active: payMethod === 'Customer Hold' }"
+            @click="payMethod = 'Customer Hold'"
+          >
+            <svg class="pay-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+            <span class="hold-text">
+              Customer Hold
+              <span class="hold-sub">Reserve items · no bill</span>
+            </span>
+          </div>
         </div>
         <!-- Disabled for Later Pay — receipt is controlled in the Pay Later modal -->
         <div
           class="receipt-row"
-          :class="{ 'receipt-disabled': payMethod === 'Later Pay' }"
-          @click="payMethod !== 'Later Pay' && (printReceipt = !printReceipt)"
+          :class="{ 'receipt-disabled': noReceiptMethod }"
+          @click="!noReceiptMethod && (printReceipt = !printReceipt)"
         >
-          <div class="checkbox" :class="{ checked: printReceipt && payMethod !== 'Later Pay' }">
-            <svg v-if="printReceipt && payMethod !== 'Later Pay'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          <div class="checkbox" :class="{ checked: printReceipt && !noReceiptMethod }">
+            <svg v-if="printReceipt && !noReceiptMethod" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
           </div>
           <span class="receipt-label">
             Print with Receipt
             <span v-if="payMethod === 'Later Pay'" class="receipt-note">(set in Pay Later modal)</span>
+            <span v-else-if="payMethod === 'Customer Hold'" class="receipt-note">(holds are not billed)</span>
           </span>
         </div>
       </div>
@@ -646,12 +846,12 @@ onMounted(() => {
         <button
           class="checkout-btn"
           :class="{ ready: canCheckout, done: checkoutDone }"
-          :disabled="checkingOut"
+          :disabled="checkingOut || creatingHold"
           @click="initiateCheckout"
         >
           <svg v-if="!checkoutDone" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          {{ checkoutDone ? 'Order Placed!' : checkingOut ? 'Processing…' : 'Checkout' }}
+          {{ checkoutDone ? 'Order Placed!' : checkingOut || creatingHold ? 'Processing…' : payMethod === 'Customer Hold' ? 'Hold Items' : 'Checkout' }}
         </button>
       </div>
 
@@ -666,6 +866,15 @@ onMounted(() => {
       :isLight="isLight"
       :orderTotal="total"
       @confirm="onPayLaterConfirm"
+    />
+
+    <!-- ── CUSTOMER HOLD MODAL (same customer book as Pay Later) ── -->
+    <PayLaterModal
+      v-model="showHoldModal"
+      mode="hold"
+      :isLight="isLight"
+      :orderTotal="total"
+      @confirm="onHoldConfirm"
     />
 
     <!-- ── TOAST ── -->
@@ -1263,20 +1472,36 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 
-.pay-methods { display: flex; gap: 8px; flex-wrap: wrap; }
+.pay-methods { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 .pay-chip {
-  padding: 8px 14px;
-  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg-input);
   color: var(--text-sub);
-  font-size: 12.5px;
+  font-size: 13px;
   transition: all 0.15s;
   user-select: none;
   font-family: 'DM Sans', sans-serif;
 }
+.pay-chip:hover:not(.active) { border-color: var(--text-muted); color: var(--text); }
+.pay-icon { flex-shrink: 0; opacity: .85; }
+
+/* Customer Hold — full-width row below the payment methods, dashed so it reads as "different" */
+.pay-chip-hold {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 11px 16px;
+  margin-top: 4px;
+  border-style: dashed;
+  text-align: left;
+}
+.hold-text { display: flex; flex-direction: column; line-height: 1.25; }
+.hold-sub  { font-size: 10.5px; font-weight: 400; opacity: .65; margin-top: 1px; }
 
 .pay-chip.active {
   border-color: var(--text);
@@ -1288,8 +1513,10 @@ onMounted(() => {
 .receipt-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
   cursor: pointer;
   user-select: none;
 }
