@@ -557,7 +557,6 @@ function addReportFooters(doc: jsPDF, margin: number) {
 // ──────────────────────────────────────────────
 function exportPDF() {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' }) // A4, points as the unit
-  const pageWidth = doc.internal.pageSize.getWidth()
   const margin = 40
   let y = 50
 
@@ -750,7 +749,6 @@ async function exportMonthlyPDF() {
 
     // 4) draw the PDF
     const doc = new jsPDF({ unit: 'pt', format: 'a4' })
-    const pageWidth = doc.internal.pageSize.getWidth()
     const margin = 40
     let y0 = drawReportHeader(doc, 'Monthly Business Report', monthLabel)
 
