@@ -32,6 +32,7 @@ const navItems = computed(() => {
     { key: 'today-business', label: 'Today Business', path: '/today-business' },
     { key: 'pay-later',      label: 'Pay Later List', path: '/pay-later' },
     { key: 'customer-holds', label: 'Customer Holds', path: '/customer-holds' },
+    { key: 'loyal-customers', label: 'Loyal Customers', path: '/loyal-customers' },
     { key: 'return-bin',     label: 'Return Bin',    path: '/return-bin' },
   ]
   if (auth.isAdmin) items.push({ key: 'users', label: 'Users', path: '/users' })
@@ -132,6 +133,8 @@ function reloadPage() {
         <svg v-else-if="item.key === 'pay-later'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
         <!-- Customer Holds icon (bookmark) -->
         <svg v-else-if="item.key === 'customer-holds'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        <!-- Loyal Customers icon (heart) -->
+        <svg v-else-if="item.key === 'loyal-customers'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
         <!-- Return Bin icon (curved back arrow) -->
         <svg v-else-if="item.key === 'return-bin'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
         <!-- Users icon -->
@@ -199,6 +202,11 @@ function reloadPage() {
   flex-direction: column;
   z-index: 10;
   transition: background 0.3s;
+  /* Fixed to the window height so the menu list can scroll when there are many items */
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
 }
 
 /* ── LIGHT THEME OVERRIDES ── */
@@ -336,8 +344,27 @@ function reloadPage() {
 }
 
 /* ── NAV ── */
+/* Slim, quiet scrollbar that matches the theme (no bright white track).
+   The thumb stays almost invisible until you hover the menu. */
+.nav {
+  scrollbar-width: thin;                              /* Firefox */
+  scrollbar-color: transparent transparent;
+}
+.nav:hover { scrollbar-color: var(--border-mid) transparent; }
+.nav::-webkit-scrollbar { width: 6px; }               /* Chrome / Safari / Edge */
+.nav::-webkit-scrollbar-track { background: transparent; }
+.nav::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 99px;
+  transition: background 0.2s;
+}
+.nav:hover::-webkit-scrollbar-thumb { background: var(--border-mid); }
+.nav::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
 .nav {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 12px;
   display: flex;
   flex-direction: column;

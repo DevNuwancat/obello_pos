@@ -30,6 +30,8 @@ const router = createRouter({
 
         { path: '/customer-holds', name: 'customer-holds', component: () => import('../views/CustomerHolds.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager', 'cashier'] } },
 
+        { path: '/loyal-customers', name: 'loyal-customers', component: () => import('../views/LoyalCustomerRecord.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
+
         { path: '/return-bin', name: 'return-bin', component: () => import('../views/ReturnBinView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
     ]
 })

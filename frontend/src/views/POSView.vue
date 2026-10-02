@@ -90,6 +90,14 @@ const checkoutDone = ref(false)
 const checkingOut  = ref(false)
 const showPayLaterModal = ref(false)
 const showHoldModal     = ref(false)
+const showLoyaltyModal  = ref(false)
+
+// "Customer Book" toggle — stays ON until the cashier turns it off.
+// Saved in localStorage because the sidebar reloads the page on every click.
+const loyaltyOn = ref(localStorage.getItem('loyaltyOn') === '1')
+watch(loyaltyOn, (v) => localStorage.setItem('loyaltyOn', v ? '1' : '0'))
+// Only Cash / Card / Bank use it — Later Pay and Customer Hold work on their own
+const loyaltyApplies = computed(() => ['Cash', 'Card', 'Bank'].includes(payMethod.value))
 const creatingHold      = ref(false)
 
 // Payment methods that never print a receipt from the main cart
@@ -434,9 +442,17 @@ function initiateCheckout() {
     showPayLaterModal.value = true
   } else if (payMethod.value === 'Customer Hold') {
     showHoldModal.value = true
+  } else if (loyaltyOn.value && loyaltyApplies.value) {
+    showLoyaltyModal.value = true   // pick the customer first, then check out
   } else {
     handleCheckout()
   }
+}
+
+// Called when the Customer Book modal confirms a customer (normal Cash / Card / Bank sale)
+function onLoyaltyConfirm(payload: { customerId: string }) {
+  showLoyaltyModal.value = false
+  handleCheckout(undefined, undefined, payload.customerId)
 }
 
 // Called when the Pay Later modal confirms a customer
@@ -450,7 +466,8 @@ function onPayLaterConfirm(payload: { customerId: string; printBill: boolean }) 
 // the sold quantity from each product's stock in the "products" table.
 // customerId — only set for Later Pay orders (links to pay_later_customers table)
 // receiptOverride — Later Pay has its own "print bill" toggle in the modal
-async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
+// loyaltyCustomerId — set when the Customer Book toggle is on: also saves the items to that customer's record
+async function handleCheckout(customerId?: string, receiptOverride?: boolean, loyaltyCustomerId?: string) {
   if (!canCheckout.value) return
   checkingOut.value = true
 
@@ -532,6 +549,28 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean) {
     if (holdFailed?.error) {
       showToast('Hold update failed: ' + holdFailed.error.message)
       return
+    }
+
+    // 3c. Customer Book: save one record per item for this customer.
+    //     A failure here must never block the sale, so it only warns.
+    if (loyaltyCustomerId) {
+      const { error: loyalError } = await supabase.from('loyal_purchases').insert(
+        itemRows.map(r => ({
+          customer_id: loyaltyCustomerId,
+          product_id: r.product_id,
+          product_name: r.product_name,
+          sku: r.sku,
+          image_url: cart.value.find(c => c.id === r.product_id)?.image_url ?? null,
+          qty: r.qty,
+          unit_price: r.unit_price,
+          line_total: r.line_total,
+          discount_label: r.discount_label,
+          payment_method: paymentMethodCode(payMethod.value),
+          invoice_no: invoiceNo,
+          cashier_id: auth.user?.id ?? null,
+        }))
+      )
+      if (loyalError) showToast('⚠️ Sale saved, but the customer record failed: ' + loyalError.message)
     }
 
     // 4. Try to print receipt (if enabled) — call the local print agent running on this computer
@@ -825,6 +864,17 @@ onMounted(async () => {
             </span>
           </div>
         </div>
+        <!-- Customer Book toggle — saves what the customer buys to their record -->
+        <div
+          class="loyalty-row"
+          :class="{ 'loyalty-inactive': !loyaltyApplies, 'loyalty-on': loyaltyOn && loyaltyApplies }"
+          @click="loyaltyOn = !loyaltyOn"
+        >
+          <div class="loyalty-switch" :class="{ on: loyaltyOn }"><span class="loyalty-knob"></span></div>
+          <span class="loyalty-title">Customer Book</span>
+          <span class="loyalty-hint">Cash · Card · Bank</span>
+        </div>
+
         <!-- Disabled for Later Pay — receipt is controlled in the Pay Later modal -->
         <div
           class="receipt-row"
@@ -866,6 +916,15 @@ onMounted(async () => {
       :isLight="isLight"
       :orderTotal="total"
       @confirm="onPayLaterConfirm"
+    />
+
+    <!-- ── CUSTOMER BOOK MODAL (Cash / Card / Bank with the toggle ON) ── -->
+    <PayLaterModal
+      v-model="showLoyaltyModal"
+      mode="loyalty"
+      :isLight="isLight"
+      :orderTotal="total"
+      @confirm="onLoyaltyConfirm"
     />
 
     <!-- ── CUSTOMER HOLD MODAL (same customer book as Pay Later) ── -->
@@ -1326,8 +1385,18 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   transition: background 0.3s;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;   /* scrolls on short screens so Checkout is never cut off */
 }
+
+/* Same slim scrollbar as the sidebar menu: hidden until you hover the panel */
+.cart-panel { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.cart-panel:hover { scrollbar-color: var(--border) transparent; }
+.cart-panel::-webkit-scrollbar { width: 6px; }
+.cart-panel::-webkit-scrollbar-track { background: transparent; }
+.cart-panel::-webkit-scrollbar-thumb { background: transparent; border-radius: 99px; transition: background 0.2s; }
+.cart-panel:hover::-webkit-scrollbar-thumb { background: var(--border); }
+.cart-panel::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 .cart-panel-header {
   padding: 24px 28px 20px;
@@ -1509,6 +1578,33 @@ onMounted(async () => {
   color: var(--accent-text);
   font-weight: 600;
 }
+
+.loyalty-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer; user-select: none;
+  transition: border-color .15s, background .15s;
+}
+.loyalty-row:hover { border-color: var(--text-muted); }
+.loyalty-row.loyalty-on { border-color: #22c55e; background: rgba(34,197,94,.08); }
+.loyalty-row.loyalty-inactive { opacity: .55; }
+.loyalty-switch {
+  position: relative; flex-shrink: 0;
+  width: 34px; height: 20px; border-radius: 10px;
+  background: var(--border); transition: background .15s;
+}
+.loyalty-switch.on { background: #22c55e; }
+.loyalty-knob {
+  position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform .15s;
+}
+.loyalty-switch.on .loyalty-knob { transform: translateX(14px); }
+.loyalty-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.loyalty-hint  { margin-left: auto; font-size: 10.5px; color: var(--text-muted); }
 
 .receipt-row {
   display: flex;
