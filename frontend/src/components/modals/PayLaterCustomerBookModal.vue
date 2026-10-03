@@ -26,6 +26,7 @@ interface Contact {
   address: string | null
   total_billed: number
   total_owed: number
+  total_loaned: number
 }
 
 // ── STATE ──
@@ -43,7 +44,7 @@ async function fetchContacts() {
   try {
     const { data, error } = await supabase
       .from('pay_later_balances')
-      .select('id, name, id_number, phone, address, total_billed, total_owed')
+      .select('id, name, id_number, phone, address, total_billed, total_owed, total_loaned')
       .order('name')
     if (error) { fetchError.value = error.message; markError(); return }
     contacts.value = data ?? []
@@ -71,12 +72,12 @@ function displayList(): Contact[] {
 
 // Small status badge per contact: not a buyer yet / owes money / fully paid
 function statusLabel(c: Contact): string {
-  if (c.total_billed === 0) return 'No purchases yet'
+  if (Number(c.total_billed) + Number(c.total_loaned) === 0) return 'No purchases yet'
   if (c.total_owed > 0)     return 'Owes money'
   return 'Paid up'
 }
 function statusClass(c: Contact): string {
-  if (c.total_billed === 0) return 'status-none'
+  if (Number(c.total_billed) + Number(c.total_loaned) === 0) return 'status-none'
   if (c.total_owed > 0)     return 'status-owes'
   return 'status-paid'
 }

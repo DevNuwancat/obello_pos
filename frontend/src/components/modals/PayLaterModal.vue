@@ -17,16 +17,22 @@ const props = defineProps<{
   modelValue: boolean
   isLight: boolean
   orderTotal: number       // total Rs. of the current cart
-  mode?: 'later' | 'hold' | 'loyalty'  // 'hold' = Customer Hold, 'loyalty' = Customer Book (both: no print toggle)
+  mode?: 'later' | 'hold' | 'loyalty' | 'loan'  // 'hold' = Customer Hold, 'loyalty' = Customer Book, 'loan' = Credit Loan (none of these print)
 }>()
 
 const isHold = computed(() => props.mode === 'hold')
 const isLoyalty = computed(() => props.mode === 'loyalty')
-const noPrintToggle = computed(() => isHold.value || isLoyalty.value)
+const isLoan = computed(() => props.mode === 'loan')
+const noPrintToggle = computed(() => isHold.value || isLoyalty.value || isLoan.value)
+
+// Credit Loan only: how much money is being lent (+ optional note)
+const loanAmount = ref('')
+const loanNote   = ref('')
+const loanValid  = computed(() => !isLoan.value || Number(loanAmount.value) > 0)
 
 const emit = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
-  (e: 'confirm', payload: { customerId: string; printBill: boolean }): void
+  (e: 'confirm', payload: { customerId: string; printBill: boolean; amount?: number; note?: string }): void
 }>()
 
 // ── TYPES ──
@@ -144,7 +150,12 @@ async function addAndSelect() {
 // ── CONFIRM (emit to POSView to do the actual checkout) ──
 function confirm() {
   if (!selectedId.value) return
-  emit('confirm', { customerId: selectedId.value, printBill: printBill.value })
+  if (!loanValid.value) return
+  emit('confirm', {
+    customerId: selectedId.value,
+    printBill: printBill.value,
+    ...(isLoan.value ? { amount: Number(loanAmount.value), note: loanNote.value.trim() || undefined } : {}),
+  })
 }
 
 // ── CLOSE ──
@@ -172,6 +183,8 @@ watch(() => props.modelValue, (open) => {
     searchQuery.value = ''
     sortMode.value   = 'latest'
     printBill.value  = false
+    loanAmount.value = ''
+    loanNote.value   = ''
     resetRegForm()
     fetchCustomers()
     window.addEventListener('keydown', onKey)
@@ -202,8 +215,8 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
           <!-- HEADER -->
           <div class="modal-header">
             <div>
-              <div class="modal-title">{{ isHold ? 'Customer Hold' : isLoyalty ? 'Customer Book' : 'Pay Later Checkout' }}</div>
-              <div class="modal-sub">Select a customer · {{ isHold ? 'items value' : 'bill total' }} {{ fmtRs(props.orderTotal) }}</div>
+              <div class="modal-title">{{ isHold ? 'Customer Hold' : isLoyalty ? 'Customer Book' : isLoan ? 'Credit Loan' : 'Pay Later Checkout' }}</div>
+              <div class="modal-sub">{{ isLoan ? 'Select a customer and enter the loan amount' : `Select a customer · ${isHold ? 'items value' : 'bill total'} ${fmtRs(props.orderTotal)}` }}</div>
             </div>
             <div class="header-right">
               <button class="btn-register" @click="goRegister">
@@ -279,6 +292,21 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
             </div>
           </div>
 
+          <!-- CREDIT LOAN: amount + note -->
+          <div v-if="isLoan" class="loan-fields">
+            <div class="loan-amount">
+              <label class="loan-label">Loan Amount <span class="req">*</span></label>
+              <div class="loan-input-wrap">
+                <span class="loan-prefix">Rs.</span>
+                <input v-model="loanAmount" type="number" min="0" class="form-input loan-input" placeholder="0.00" />
+              </div>
+            </div>
+            <div class="loan-note">
+              <label class="loan-label">Note (optional)</label>
+              <input v-model="loanNote" class="form-input" placeholder="e.g. to settle a bank loan installment" autocomplete="off" />
+            </div>
+          </div>
+
           <!-- FOOTER -->
           <div class="modal-footer">
             <div class="footer-left">
@@ -293,10 +321,10 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
               <button class="modal-cancel" @click="close">Cancel</button>
               <button
                 class="modal-save"
-                :disabled="!selectedId"
+                :disabled="!selectedId || !loanValid"
                 @click="confirm"
               >
-                {{ selectedCustomer ? `${isHold ? 'Hold' : isLoyalty ? 'Save to record' : 'Pay Later'} · ${selectedCustomer.name}` : 'Select a Customer' }}
+                {{ selectedCustomer ? `${isHold ? 'Hold' : isLoyalty ? 'Save to record' : isLoan ? 'Give Loan' : 'Pay Later'} · ${selectedCustomer.name}` : 'Select a Customer' }}
               </button>
             </div>
           </div>
@@ -555,6 +583,19 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
   background: var(--green); color: #fff;
   display: flex; align-items: center; justify-content: center;
 }
+
+/* ── CREDIT LOAN FIELDS ── */
+.loan-fields { display: flex; gap: 12px; padding: 14px 24px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.loan-amount { width: 170px; flex-shrink: 0; }
+.loan-note { flex: 1; min-width: 0; }
+.loan-label { display: block; font-size: 11px; font-weight: 600; color: var(--text-sub); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 6px; }
+.loan-input-wrap { position: relative; display: flex; align-items: center; }
+.loan-prefix { position: absolute; left: 12px; font-size: 11px; color: var(--text-muted); pointer-events: none; }
+.form-input.loan-input { padding-left: 38px; font-family: 'DM Mono', monospace; font-weight: 600; }
+/* hide the tiny up/down arrows so they don't crowd the number */
+.form-input.loan-input::-webkit-outer-spin-button,
+.form-input.loan-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.form-input.loan-input { -moz-appearance: textfield; appearance: textfield; }
 
 /* ── FORM ── */
 .modal-body { flex: 1; overflow-y: auto; padding: 22px 24px; min-height: 0; display: flex; flex-direction: column; gap: 16px; }

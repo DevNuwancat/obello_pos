@@ -167,8 +167,24 @@ async function fetchReturns() {
   returnedAmount.value = (data ?? []).reduce((s, r) => s + Number(r.amount), 0)
 }
 
+// ── Credit Loans given on the selected day (cash lent — NOT a sale, never in Sales/Profit) ──
+const loansCount  = ref(0)
+const loansAmount = ref(0)
+
+async function fetchLoans() {
+  const { start, end } = dayRange(selectedDate.value)
+  const { data, error } = await supabase
+    .from('pay_later_loans')
+    .select('amount')
+    .gte('given_at', start)
+    .lte('given_at', end)
+  if (error) { console.error('Loans fetch error:', error); loansCount.value = 0; loansAmount.value = 0; return }
+  loansCount.value  = (data ?? []).length
+  loansAmount.value = (data ?? []).reduce((s, r) => s + Number(r.amount), 0)
+}
+
 // Reload the report whenever the selected date changes
-watch(selectedDate, () => { fetchReportData(); fetchReturns() })
+watch(selectedDate, () => { fetchReportData(); fetchReturns(); fetchLoans() })
 
 
 // ──────────────────────────────────────────────
@@ -455,11 +471,12 @@ function paymentLabel(method: string): string {
 function refreshData() {
   fetchReportData()
   fetchReturns()
+  fetchLoans()
   fetchAvailableDates()
 }
 
 
-// ── Shared PDF look: bordered grid, light header with bold dark text ──
+// ── Shared PDF look: simple bordered grid, light header with bold dark text ──
 const borderColor: [number, number, number] = [90, 88, 84]
 const headFill: [number, number, number] = [247, 245, 242]
 const gridStyles = {
@@ -467,6 +484,11 @@ const gridStyles = {
   lineColor: borderColor, lineWidth: 0.6,
 }
 const gridHead = { fillColor: headFill, textColor: [20, 20, 18] as [number, number, number], fontStyle: 'bold' as const }
+
+// Money in the tables with commas: 9180 → "9,180.00", 402370 → "402,370.00"
+function fmtNum(n: number): string {
+  return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 
 // "obello POS V2.0" on the left, report title + subtitle on the right, thin line under.
 // Returns the y position where the page body should start.
@@ -533,6 +555,7 @@ function exportPDF() {
     ['Later Pay Owed', fmtRs(laterPayTotal.value)],
     ['Returned Items', String(returnedCount.value)],
     ['Returned Amount', fmtRs(returnedAmount.value)],
+    ['Loans Given', `${loansCount.value} (${fmtRs(loansAmount.value)})`],
   ]
   autoTable(doc, {
     startY: y,
@@ -575,7 +598,7 @@ function exportPDF() {
         paymentLabel(t.payment_method),
         t.status,
         String(itemCountByTxn.value.get(t.id) ?? 0),
-        `Rs ${t.total.toFixed(2)}`,
+        fmtRs(t.total),
       ]],
       styles: gridStyles,
       headStyles: gridHead,
@@ -597,8 +620,8 @@ function exportPDF() {
           row.sku || '—',
           row.discount_label || '—',
           String(row.qty),
-          row.unit_price.toFixed(2),
-          row.line_total.toFixed(2),
+          fmtNum(row.unit_price),
+          fmtNum(row.line_total),
         ]),
         styles: { ...gridStyles, fontSize: 8.5, cellPadding: 5 },
         headStyles: gridHead,
@@ -746,9 +769,9 @@ async function exportMonthlyPDF() {
       head: [['Date', 'Sales', 'Sales (Rs.)', 'Cost (Rs.)', 'Profit (Rs.)']],
       body: [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, d]) => [
         new Date(key + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
-        String(d.count), d.sales.toFixed(2), d.cost.toFixed(2), (d.sales - d.cost).toFixed(2),
+        String(d.count), fmtNum(d.sales), fmtNum(d.cost), fmtNum(d.sales - d.cost),
       ]),
-      foot: [['Total', String(sales.length), totalSales.toFixed(2), totalCost.toFixed(2), (totalSales - totalCost).toFixed(2)]],
+      foot: [['Total', String(sales.length), fmtNum(totalSales), fmtNum(totalCost), fmtNum(totalSales - totalCost)]],
       footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
       columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
     })
@@ -756,7 +779,7 @@ async function exportMonthlyPDF() {
     heading('Payment methods')
     table({
       head: [['Method', 'Sales', 'Total (Rs.)']],
-      body: [...methods.entries()].map(([method, d]) => [paymentLabel(method), String(d.count), d.total.toFixed(2)]),
+      body: [...methods.entries()].map(([method, d]) => [paymentLabel(method), String(d.count), fmtNum(d.total)]),
       columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' } },
     })
 
@@ -764,7 +787,7 @@ async function exportMonthlyPDF() {
       heading('Top selling products')
       table({
         head: [['#', 'Product', 'Qty sold', 'Total (Rs.)']],
-        body: topProducts.map(([name, d], i) => [String(i + 1), name, String(d.qty), d.total.toFixed(2)]),
+        body: topProducts.map(([name, d], i) => [String(i + 1), name, String(d.qty), fmtNum(d.total)]),
         columnStyles: { 0: { cellWidth: 24 }, 2: { halign: 'center' }, 3: { halign: 'right' } },
       })
     }
@@ -800,6 +823,7 @@ function showToastMsg(msg: string) {
 onMounted(() => {
   fetchReportData()
   fetchReturns()
+  fetchLoans()
   fetchAvailableDates()
 })
 </script>
@@ -910,6 +934,12 @@ onMounted(() => {
           <div class="stat-label">Later Pay</div>
           <div class="stat-value">{{ laterPayCount }} <span class="stat-value-sub">order{{ laterPayCount === 1 ? '' : 's' }}</span></div>
           <div class="stat-sub">{{ fmtRs(laterPayTotal) }} sold on credit · already in Sales above</div>
+        </div>
+        <!-- Loans Given — cash lent to customers (informational, not a sale) -->
+        <div class="stat-card loan-card">
+          <div class="stat-label">Loans Given</div>
+          <div class="stat-value">{{ loansCount }} <span class="stat-value-sub">loan{{ loansCount === 1 ? '' : 's' }}</span></div>
+          <div class="stat-sub">{{ fmtRs(loansAmount) }} lent {{ isViewingToday ? 'today' : 'this day' }} · not in Sales</div>
         </div>
         <!-- Returned items — units brought back this day and their value -->
         <div class="stat-card return-card">
@@ -1273,6 +1303,7 @@ onMounted(() => {
 
 .stat-card.later-card { border-color: var(--amber-bg); }
 .stat-card.return-card { border-color: var(--red-bg); }
+.stat-card.loan-card { border-color: var(--amber-bg); }
 
 .stat-label { font-size: 11px; color: var(--text-sub); text-transform: uppercase; letter-spacing: .06em; font-weight: 500; }
 .stat-value { font-size: 22px; font-weight: 600; margin-top: 4px; letter-spacing: -.02em; font-family: 'DM Mono', monospace; color: var(--text); }

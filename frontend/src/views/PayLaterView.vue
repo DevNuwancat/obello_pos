@@ -40,6 +40,18 @@ interface CustomerBalance {
   total_owed: number
   last_bill_at: string | null
   last_payment_at: string | null
+  total_loaned: number          // money the shop lent this customer (Credit Loan)
+  last_loan_at: string | null
+}
+
+// One Credit Loan (cash lent to a customer)
+interface Loan {
+  id: string
+  customer_id: string
+  amount: number
+  note: string | null
+  given_at: string
+  users: { full_name: string | null } | null
 }
 
 // One Later Pay sale belonging to a customer
@@ -98,6 +110,7 @@ const auth = useAuthStore()   // who's logged in right now — used to stamp "wh
 // ──────────────────────────────────────────────
 const customers = ref<CustomerBalance[]>([])
 const bills      = ref<CustomerBill[]>([])
+const loans      = ref<Loan[]>([])
 const billItems  = ref<BillItem[]>([])
 const payments   = ref<Payment[]>([])
 const paymentEdits = ref<PaymentEdit[]>([])
@@ -125,6 +138,14 @@ async function fetchAll() {
       .order('created_at', { ascending: false })
     if (billError) { fetchError.value = billError.message; markError(); return }
     bills.value = billData ?? []
+
+    // 2b. Every Credit Loan (money lent), newest first
+    const { data: loanData, error: loanError } = await supabase
+      .from('pay_later_loans')
+      .select('*, users(full_name)')
+      .order('given_at', { ascending: false })
+    if (loanError) { fetchError.value = loanError.message; markError(); return }
+    loans.value = (loanData ?? []) as unknown as Loan[]
 
     // 3. Items inside those bills (joined with product image)
     const billIds = bills.value.map(b => b.id)
@@ -178,6 +199,54 @@ const billsByCustomer = computed(() => {
   return map
 })
 
+const loansByCustomer = computed(() => {
+  const map = new Map<string, Loan[]>()
+  for (const l of loans.value) {
+    const list = map.get(l.customer_id) ?? []
+    list.push(l)
+    map.set(l.customer_id, list)
+  }
+  return map
+})
+
+// ── OLDEST-FIRST REPAYMENT ──
+// A customer has ONE balance (bills + loans − payments). To show which entries are
+// settled, line up every bill and loan by date (oldest first) and pour the money
+// they have paid over them, one by one. Worked out here from total_paid, so edits or
+// removed payments update it automatically — nothing extra is saved.
+type AllocStatus = 'paid' | 'partial' | 'unpaid'
+interface Alloc { paid: number; left: number; status: AllocStatus }
+
+const allocations = computed(() => {
+  const result = new Map<string, Alloc>()   // key = bill id or loan id
+  for (const c of customers.value) {
+    const entries = [
+      ...(billsByCustomer.value.get(c.id) ?? []).map(b => ({ id: b.id, date: b.created_at, amount: Number(b.total) })),
+      ...(loansByCustomer.value.get(c.id) ?? []).map(l => ({ id: l.id, date: l.given_at, amount: Number(l.amount) })),
+    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+    let pool = Number(c.total_paid)
+    for (const e of entries) {
+      const paid = Math.min(pool, e.amount)
+      pool -= paid
+      const left = Math.round((e.amount - paid) * 100) / 100
+      result.set(e.id, { paid, left, status: left <= 0 ? 'paid' : paid > 0 ? 'partial' : 'unpaid' })
+    }
+  }
+  return result
+})
+
+function allocLabel(id: string): string {
+  const a = allocations.value.get(id)
+  if (!a) return ''
+  if (a.status === 'paid') return '✓ Paid'
+  if (a.status === 'partial') return `Partly paid · ${fmtRs(a.left)} left`
+  return 'Unpaid'
+}
+function allocClass(id: string): string {
+  return 'alloc-' + (allocations.value.get(id)?.status ?? 'unpaid')
+}
+
 const itemsByBill = computed(() => {
   const map = new Map<string, BillItem[]>()
   for (const i of billItems.value) {
@@ -216,7 +285,10 @@ const editsByPayment = computed(() => {
 const totalOwed       = computed(() => customers.value.reduce((s, c) => s + c.total_owed, 0))
 const totalCollected  = computed(() => customers.value.reduce((s, c) => s + c.total_paid, 0))
 const pendingAccounts = computed(() => customers.value.filter(c => c.total_owed > 0).length)
-const paidAccounts    = computed(() => customers.value.filter(c => c.total_billed > 0 && c.total_owed <= 0).length)
+const totalLoaned     = computed(() => customers.value.reduce((s, c) => s + Number(c.total_loaned), 0))
+// A customer has "history" once they bought on credit OR were lent money
+const hasCredit = (c: CustomerBalance) => Number(c.total_billed) + Number(c.total_loaned) > 0
+const paidAccounts    = computed(() => customers.value.filter(c => hasCredit(c) && c.total_owed <= 0).length)
 
 
 // ──────────────────────────────────────────────
@@ -231,10 +303,8 @@ const sortMode = ref<SortMode>('latest')
 
 // Newest activity = whichever is more recent between last bill and last payment
 function lastActivity(c: CustomerBalance): string | null {
-  if (c.last_bill_at && c.last_payment_at) {
-    return c.last_bill_at > c.last_payment_at ? c.last_bill_at : c.last_payment_at
-  }
-  return c.last_bill_at ?? c.last_payment_at
+  const dates = [c.last_bill_at, c.last_payment_at, c.last_loan_at].filter((d): d is string => !!d)
+  return dates.length ? dates.reduce((a, b) => (a > b ? a : b)) : null
 }
 
 const filteredCustomers = computed(() => {
@@ -245,7 +315,7 @@ const filteredCustomers = computed(() => {
     // are still selectable in the Cart's contact list, but this ledger table
     // only shows people who have real bill/payment activity.
     if (activeTab.value === 'pending') return c.total_owed > 0
-    return c.total_billed > 0 && c.total_owed <= 0
+    return hasCredit(c) && c.total_owed <= 0
   })
 
   const q = searchQuery.value.toLowerCase()
@@ -531,12 +601,13 @@ function fmtDate(d: string | null): string {
 // 12. EXPORT CSV
 // ──────────────────────────────────────────────
 function exportCSV() {
-  const headers = ['Name', 'Phone', 'ID Number', 'Total Billed', 'Total Paid', 'Total Owed', 'Last Bill', 'Last Payment', 'Status']
+  const headers = ['Name', 'Phone', 'ID Number', 'Total Billed', 'Total Loaned', 'Total Paid', 'Total Owed', 'Last Bill', 'Last Payment', 'Status']
   const rows = filteredCustomers.value.map(c => [
     c.name,
     c.phone || '—',
     c.id_number || '—',
     c.total_billed.toFixed(2),
+    Number(c.total_loaned).toFixed(2),
     c.total_paid.toFixed(2),
     c.total_owed.toFixed(2),
     fmtDate(c.last_bill_at),
@@ -559,6 +630,17 @@ function exportCSV() {
 // Builds a real A4 PDF file straight in the browser and downloads it —
 // same look and structure as Today Business Report's PDF export.
 // ──────────────────────────────────────────────
+// Same simple bordered-grid look as the Today Business reports; money with commas (9,180.00)
+const pdfBorder: [number, number, number] = [90, 88, 84]
+const pdfGridStyles = {
+  font: 'helvetica', fontSize: 9, cellPadding: 6, textColor: [20, 20, 18] as [number, number, number],
+  lineColor: pdfBorder, lineWidth: 0.6,
+}
+const pdfGridHead = { fillColor: [247, 245, 242] as [number, number, number], textColor: [20, 20, 18] as [number, number, number], fontStyle: 'bold' as const }
+function fmtNum(n: number): string {
+  return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
 function exportPDF() {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' })
   const pageWidth = doc.internal.pageSize.getWidth()
@@ -591,6 +673,7 @@ function exportPDF() {
   // ── SUMMARY CARDS (key/value grid) ──
   const summaryPairs: [string, string][] = [
     ['Total Owed', fmtRs(totalOwed.value)],
+    ['Loans Given', fmtRs(totalLoaned.value)],
     ['Total Collected', fmtRs(totalCollected.value)],
     ['Pending Accounts', String(pendingAccounts.value)],
     ['Paid Accounts', String(paidAccounts.value)],
@@ -598,16 +681,10 @@ function exportPDF() {
   autoTable(doc, {
     startY: y,
     margin: { left: margin, right: margin },
-    theme: 'plain',
+    theme: 'grid',
     body: summaryPairs,
-    styles: { font: 'helvetica', fontSize: 10, cellPadding: 6 },
-    columnStyles: {
-      0: { textColor: [110, 108, 104], cellWidth: 140 },
-      1: { textColor: [20, 20, 18], fontStyle: 'bold' },
-    },
-    didParseCell: (data) => {
-      if (data.row.index % 2 === 0) data.cell.styles.fillColor = [247, 245, 242]
-    },
+    styles: { ...pdfGridStyles, fontSize: 10, cellPadding: 7 },
+    columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
   })
   y = (doc as any).lastAutoTable.finalY + 26
 
@@ -618,13 +695,13 @@ function exportPDF() {
   doc.text(activeTab.value === 'pending' ? 'Pending Accounts' : 'Paid Accounts', margin, y)
   y += 10
 
-  const custHead = [['Customer', 'Phone', 'Total Billed', 'Total Paid', 'Balance', 'Last Activity']]
+  const custHead = [['Customer', 'Phone', 'Credit (bills + loans)', 'Total Paid', 'Balance', 'Last Activity']]
   const custBody = filteredCustomers.value.map(c => [
     c.name,
     c.phone || '—',
-    c.total_billed.toFixed(2),
-    c.total_paid.toFixed(2),
-    c.total_owed.toFixed(2),
+    fmtNum(Number(c.total_billed) + Number(c.total_loaned)),
+    fmtNum(c.total_paid),
+    fmtNum(c.total_owed),
     fmtDate(lastActivity(c)),
   ])
   autoTable(doc, {
@@ -632,9 +709,9 @@ function exportPDF() {
     margin: { left: margin, right: margin },
     head: custHead,
     body: custBody,
-    theme: 'striped',
-    styles: { font: 'helvetica', fontSize: 9, cellPadding: 6 },
-    headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
+    theme: 'grid',
+    styles: pdfGridStyles,
+    headStyles: pdfGridHead,
     columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
   })
   y = (doc as any).lastAutoTable.finalY + 26
@@ -648,7 +725,7 @@ function exportPDF() {
       nameById.get(b.customer_id) || '—',
       b.invoice_no,
       fmtDate(b.created_at),
-      b.total.toFixed(2),
+      fmtNum(b.total),
     ])
 
   if (billBody.length > 0) {
@@ -666,9 +743,9 @@ function exportPDF() {
       margin: { left: margin, right: margin },
       head: [['Customer', 'Invoice No', 'Date', 'Total']],
       body: billBody,
-      theme: 'striped',
-      styles: { font: 'helvetica', fontSize: 8.5, cellPadding: 5 },
-      headStyles: { fillColor: [20, 20, 18], textColor: [255, 255, 255], fontStyle: 'bold' },
+      theme: 'grid',
+      styles: { ...pdfGridStyles, fontSize: 8.5, cellPadding: 5 },
+      headStyles: pdfGridHead,
       columnStyles: { 3: { halign: 'right' } },
     })
   }
@@ -731,6 +808,11 @@ onMounted(fetchAll)
           <div class="stat-label">Total Owed</div>
           <div class="stat-value low">{{ fmtRs(totalOwed) }}</div>
           <div class="stat-sub">across all customers</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Loans Given</div>
+          <div class="stat-value">{{ fmtRs(totalLoaned) }}</div>
+          <div class="stat-sub">cash lent to customers</div>
         </div>
         <div class="stat-card">
           <div class="stat-label">Total Collected</div>
@@ -808,7 +890,7 @@ onMounted(fetchAll)
                 <th>#</th>
                 <th>Customer</th>
                 <th>Phone</th>
-                <th style="text-align:right">Total Billed</th>
+                <th style="text-align:right">Total Credit</th>
                 <th style="text-align:right">Total Paid</th>
                 <th style="text-align:right">Balance</th>
                 <th>Last Activity</th>
@@ -830,11 +912,20 @@ onMounted(fetchAll)
                   </td>
                   <td>{{ index + 1 }}</td>
                   <td class="name-cell">
-                    {{ c.name }}
+                    <span class="name-line">
+                      {{ c.name }}
+                      <!-- coin = has a loan · shirt = bought clothes on credit (both = both) -->
+                      <span v-if="c.total_loaned > 0" class="type-icon type-loan" title="Has a loan">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a2.5 2.5 0 0 0-2.5-1.5c-1.4 0-2.5.9-2.5 2s1.1 1.7 2.5 2 2.5.9 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.5"/><line x1="12" y1="6" x2="12" y2="7.5"/><line x1="12" y1="16.5" x2="12" y2="18"/></svg>
+                      </span>
+                      <span v-if="c.total_billed > 0" class="type-icon type-cloth" title="Bought clothes on credit">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>
+                      </span>
+                    </span>
                     <div class="cust-id">{{ c.id_number || '' }}</div>
                   </td>
                   <td class="date-cell">{{ c.phone || '—' }}</td>
-                  <td class="price-cell" style="text-align:right">{{ fmtRs(c.total_billed) }}</td>
+                  <td class="price-cell" style="text-align:right">{{ fmtRs(Number(c.total_billed) + Number(c.total_loaned)) }}</td>
                   <td class="price-cell" style="text-align:right; color:var(--green)">{{ fmtRs(c.total_paid) }}</td>
                   <td class="price-cell" style="text-align:right; font-weight:700" :style="{ color: c.total_owed > 0 ? 'var(--red)' : 'var(--text-muted)' }">
                     {{ fmtRs(c.total_owed) }}
@@ -875,6 +966,22 @@ onMounted(fetchAll)
                         </div>
                       </div>
 
+                      <!-- Credit Loans (cash lent) -->
+                      <div v-if="(loansByCustomer.get(c.id) ?? []).length > 0" class="expand-section">
+                        <div class="expand-section-title">Credit Loans ({{ (loansByCustomer.get(c.id) ?? []).length }})</div>
+                        <div v-for="loan in (loansByCustomer.get(c.id) ?? [])" :key="loan.id" class="bill-card loan-card">
+                          <div class="loan-row">
+                            <span class="type-icon type-loan">
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a2.5 2.5 0 0 0-2.5-1.5c-1.4 0-2.5.9-2.5 2s1.1 1.7 2.5 2 2.5.9 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.5"/><line x1="12" y1="6" x2="12" y2="7.5"/><line x1="12" y1="16.5" x2="12" y2="18"/></svg>
+                            </span>
+                            <span class="bill-date">{{ fmtDate(loan.given_at) }}</span>
+                            <span class="loan-note">{{ loan.note || 'Loan' }}<span v-if="loan.users?.full_name" class="loan-by"> · by {{ loan.users.full_name }}</span></span>
+                            <span class="alloc-badge" :class="allocClass(loan.id)">{{ allocLabel(loan.id) }}</span>
+                            <span class="bill-total">{{ fmtRs(loan.amount) }}</span>
+                          </div>
+                        </div>
+                      </div>
+
                       <!-- Bills (what they bought) -->
                       <div class="expand-section">
                         <div class="expand-section-title">Bills ({{ (billsByCustomer.get(c.id) ?? []).length }})</div>
@@ -883,6 +990,7 @@ onMounted(fetchAll)
                           <div class="bill-head">
                             <span class="bill-invoice">{{ bill.invoice_no }}</span>
                             <span class="bill-date">{{ fmtDate(bill.created_at) }}</span>
+                            <span class="alloc-badge alloc-pushed" :class="allocClass(bill.id)">{{ allocLabel(bill.id) }}</span>
                             <span class="bill-total">{{ fmtRs(bill.total) }}</span>
                           </div>
                           <div
@@ -1283,6 +1391,27 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 
 .contact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12.5px; color: var(--text); }
 .contact-label { color: var(--text-muted); font-size: 10.5px; display: block; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+
+.name-line { display: inline-flex; align-items: center; gap: 6px; }
+.type-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+}
+.type-loan  { background: rgba(251,191,36,.18); color: #d97706; }
+.type-cloth { background: rgba(96,165,250,.18); color: #3b82f6; }
+.page-wrap:not(.light) .type-loan { color: #fbbf24; }
+.page-wrap:not(.light) .type-cloth { color: #60a5fa; }
+
+.loan-row { display: flex; align-items: center; gap: 10px; }
+.loan-note { font-size: 12px; color: var(--text-sub); flex: 1; min-width: 0; }
+.loan-by { color: var(--text-muted); }
+
+.alloc-badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 5px; border: 1px solid var(--border); white-space: nowrap; }
+.alloc-badge.alloc-paid    { color: var(--green); background: var(--green-bg); border-color: var(--green); }
+.alloc-badge.alloc-partial { color: #d97706; background: rgba(251,191,36,.14); border-color: #d97706; }
+.alloc-badge.alloc-unpaid  { color: var(--text-sub); background: var(--surface2); }
+.page-wrap:not(.light) .alloc-badge.alloc-partial { color: #fbbf24; border-color: #fbbf24; }
+.loan-row .bill-total { margin-left: 0; }
 
 .bill-card { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; margin-bottom: 8px; }
 .bill-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }

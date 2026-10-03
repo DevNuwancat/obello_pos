@@ -91,6 +91,7 @@ const checkingOut  = ref(false)
 const showPayLaterModal = ref(false)
 const showHoldModal     = ref(false)
 const showLoyaltyModal  = ref(false)
+const showLoanModal     = ref(false)
 
 // "Customer Book" toggle — stays ON until the cashier turns it off.
 // Saved in localStorage because the sidebar reloads the page on every click.
@@ -109,12 +110,12 @@ const payIcons: Record<string, string> = {
   'Later Pay': '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
 }
 
-const noReceiptMethod = computed(() => payMethod.value === 'Later Pay' || payMethod.value === 'Customer Hold')
+const noReceiptMethod = computed(() => payMethod.value === 'Later Pay' || payMethod.value === 'Customer Hold' || payMethod.value === 'Credit Loan')
 
 // When Later Pay is selected, turn off "Print with Receipt" automatically —
 // you can still toggle it on manually in the Pay Later modal itself.
 watch(payMethod, (method) => {
-  if (method === 'Later Pay' || method === 'Customer Hold') printReceipt.value = false
+  if (method === 'Later Pay' || method === 'Customer Hold' || method === 'Credit Loan') printReceipt.value = false
 })
 const toastMsg    = ref('')
 const toastVisible = ref(false)
@@ -173,6 +174,7 @@ const total       = computed(() => subtotal.value - discountAmt.value)
 const balance     = computed(() => amountPaid.value ? Math.max(0, amountPaid.value - total.value) : 0)
 const totalQty    = computed(() => cart.value.reduce((s, i) => s + i.qty, 0))
 const canCheckout = computed(() => {
+  if (payMethod.value === 'Credit Loan') return !checkoutDone.value // a loan is money, it needs no cart items
   if (cart.value.length === 0 || checkoutDone.value) return false
   if (payMethod.value === 'Later Pay') return true
   if (payMethod.value === 'Customer Hold') return true // no payment needed, items are only reserved
@@ -442,10 +444,37 @@ function initiateCheckout() {
     showPayLaterModal.value = true
   } else if (payMethod.value === 'Customer Hold') {
     showHoldModal.value = true
+  } else if (payMethod.value === 'Credit Loan') {
+    if (cart.value.length > 0) {
+      showToast("Loans don't use cart items — clear the cart first")
+      return
+    }
+    showLoanModal.value = true
   } else if (loyaltyOn.value && loyaltyApplies.value) {
     showLoyaltyModal.value = true   // pick the customer first, then check out
   } else {
     handleCheckout()
+  }
+}
+
+// Credit Loan: money lent to the customer. Saved on its own (not a sale), so it adds to
+// their Pay Later balance but never touches stock, receipts or Today Business sales.
+async function onLoanConfirm(payload: { customerId: string; amount?: number; note?: string }) {
+  showLoanModal.value = false
+  if (!payload.amount || payload.amount <= 0) return
+  creatingHold.value = true
+  try {
+    const { error } = await supabase.from('pay_later_loans').insert({
+      customer_id: payload.customerId,
+      amount: payload.amount,
+      note: payload.note ?? null,
+      given_by: auth.user?.id ?? null,
+    })
+    if (error) { showToast('Loan failed: ' + error.message); return }
+    showToast(`${fmt(payload.amount)} loan recorded`)
+    payMethod.value = 'Cash'
+  } finally {
+    creatingHold.value = false
   }
 }
 
@@ -860,7 +889,20 @@ onMounted(async () => {
             <svg class="pay-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
             <span class="hold-text">
               Customer Hold
-              <span class="hold-sub">Reserve items · no bill</span>
+              <span class="hold-sub">Reserve items</span>
+            </span>
+          </div>
+
+          <!-- Credit Loan: cash lent to a customer, added to their Pay Later balance -->
+          <div
+            class="pay-chip pay-chip-hold"
+            :class="{ active: payMethod === 'Credit Loan' }"
+            @click="payMethod = 'Credit Loan'"
+          >
+            <svg class="pay-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.5 9.5a2.5 2.5 0 0 0-2.5-1.5c-1.4 0-2.5.9-2.5 2s1.1 1.7 2.5 2 2.5.9 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.5"/><line x1="12" y1="6" x2="12" y2="7.5"/><line x1="12" y1="16.5" x2="12" y2="18"/></svg>
+            <span class="hold-text">
+              Credit Loan
+              <span class="hold-sub">Cash lent out</span>
             </span>
           </div>
         </div>
@@ -888,6 +930,7 @@ onMounted(async () => {
             Print with Receipt
             <span v-if="payMethod === 'Later Pay'" class="receipt-note">(set in Pay Later modal)</span>
             <span v-else-if="payMethod === 'Customer Hold'" class="receipt-note">(holds are not billed)</span>
+            <span v-else-if="payMethod === 'Credit Loan'" class="receipt-note">(loans are not billed)</span>
           </span>
         </div>
       </div>
@@ -901,7 +944,7 @@ onMounted(async () => {
         >
           <svg v-if="!checkoutDone" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
           <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          {{ checkoutDone ? 'Order Placed!' : checkingOut || creatingHold ? 'Processing…' : payMethod === 'Customer Hold' ? 'Hold Items' : 'Checkout' }}
+          {{ checkoutDone ? 'Order Placed!' : checkingOut || creatingHold ? 'Processing…' : payMethod === 'Customer Hold' ? 'Hold Items' : payMethod === 'Credit Loan' ? 'Credit Loan' : 'Checkout' }}
         </button>
       </div>
 
@@ -916,6 +959,15 @@ onMounted(async () => {
       :isLight="isLight"
       :orderTotal="total"
       @confirm="onPayLaterConfirm"
+    />
+
+    <!-- ── CREDIT LOAN MODAL (same customer book as Pay Later, plus amount + note) ── -->
+    <PayLaterModal
+      v-model="showLoanModal"
+      mode="loan"
+      :isLight="isLight"
+      :orderTotal="0"
+      @confirm="onLoanConfirm"
     />
 
     <!-- ── CUSTOMER BOOK MODAL (Cash / Card / Bank with the toggle ON) ── -->
@@ -1559,12 +1611,12 @@ onMounted(async () => {
 .pay-chip:hover:not(.active) { border-color: var(--text-muted); color: var(--text); }
 .pay-icon { flex-shrink: 0; opacity: .85; }
 
-/* Customer Hold — full-width row below the payment methods, dashed so it reads as "different" */
+/* Customer Hold + Credit Loan — second row below the payment methods, dashed so they read as "different" */
 .pay-chip-hold {
-  grid-column: 1 / -1;
+  grid-column: span 1;
   justify-content: flex-start;
-  gap: 12px;
-  padding: 11px 16px;
+  gap: 10px;
+  padding: 11px 14px;
   margin-top: 4px;
   border-style: dashed;
   text-align: left;
