@@ -11,6 +11,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { phoneError } from '../../lib/phone'
 
 // ── PROPS ──
 const props = defineProps<{
@@ -124,7 +125,8 @@ function resetRegForm() {
 }
 
 async function addAndSelect() {
-  if (!regName.value.trim()) { regShowErr.value = true; return }
+  // Name and a valid mobile number are both required
+  if (!regName.value.trim() || phoneError(regPhone.value)) { regShowErr.value = true; return }
   regSaving.value = true
   regError.value  = ''
   const { data, error } = await supabase
@@ -132,7 +134,7 @@ async function addAndSelect() {
     .insert({
       name:       regName.value.trim(),
       id_number:  regIdNum.value || null,
-      phone:      regPhone.value || null,
+      phone:      regPhone.value.trim(),
       address:    regAddress.value || null,
     })
     .select()
@@ -203,7 +205,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
       v-if="modelValue"
       class="modal-overlay"
       :class="{ light: props.isLight }"
-      @click.self="close"
+      @click.self="!isLoan && close()"
     >
       <div class="modal-box">
 
@@ -381,14 +383,16 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 
             <!-- Phone -->
             <div class="form-field">
-              <label class="form-label">Phone Number</label>
+              <label class="form-label">Mobile Number <span class="req">*</span></label>
               <input
                 v-model="regPhone"
                 class="form-input"
+                :class="{ error: regShowErr && phoneError(regPhone) }"
                 placeholder="e.g. 077 123 4567"
                 autocomplete="off"
                 type="tel"
               />
+              <span v-if="regShowErr && phoneError(regPhone)" class="form-error">{{ phoneError(regPhone) }}</span>
             </div>
 
             <!-- Address -->

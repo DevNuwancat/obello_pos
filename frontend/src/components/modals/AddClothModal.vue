@@ -4,9 +4,11 @@ import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
 import { fetchSizesForCategory } from '../../composables/useCategorySizes'
 import { friendlyDbError } from '../../lib/friendlyError'
+import { useBarcodePrintStore } from '../../store/barcodePrint'
 
 const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{ (e: 'update:modelValue', val: boolean): void }>()
+const barcodePrintStore = useBarcodePrintStore()
 
 // ── SIZES FOR THE SELECTED MAIN CATEGORY ──
 // Loaded from Supabase based on which size groups are active for this category type.
@@ -383,7 +385,10 @@ async function save() {
       image_url,
     })
 
-    let { error } = await supabase.from('products').insert(buildRow())
+    // .select().single() hands back the saved row, so we know its new id
+    // (needed to put it in the barcode print queue below).
+    const savedColumns = 'id, name, sku, barcode, selling_price, image_url, stock'
+    let { data: saved, error } = await supabase.from('products').insert(buildRow()).select(savedColumns).single()
 
     // Safety net: if the barcode we generated got taken by someone else in the
     // split-second between clicking "Gen" and clicking "Add Product" (or the
@@ -392,10 +397,18 @@ async function save() {
     // try saving one more time.
     if (error?.code === '23505' && error.message.includes('barcode')) {
       barcode.value = await nextBarcode()
-      ;({ error } = await supabase.from('products').insert(buildRow()))
+      ;({ data: saved, error } = await supabase.from('products').insert(buildRow()).select(savedColumns).single())
     }
 
     if (error) { saveError.value = friendlyDbError(error); return }
+
+    // New item → straight into the barcode print queue, one label per unit in
+    // stock (at least 1, so an item added with 0 stock still gets a label).
+    // The product is already saved by now, so a queue problem must never
+    // turn into a "save failed" message.
+    if (saved) {
+      try { barcodePrintStore.addToQueue(saved, saved.stock || 1) } catch (e) { console.warn('Could not add to print queue:', e) }
+    }
 
     // Remember these 4 picks so next time (if the switch is ON) we can auto-fill them
     if (selectedType.value)          localStorage.setItem(LS_TYPE, selectedType.value)
@@ -744,7 +757,7 @@ async function save() {
     </div>
   </Transition>
 
-  <Toast message="Product added successfully!" :show="showToast" />
+  <Toast message="Product added and sent to the barcode print queue" :show="showToast" />
 </template>
 
 <style scoped>

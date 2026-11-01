@@ -7,6 +7,7 @@
 import { ref, computed } from 'vue'
 import { supabase } from '../../lib/supabase'
 import { friendlyDbError } from '../../lib/friendlyError'
+import { useBarcodePrintStore } from '../../store/barcodePrint'
 // The real sample CSV file, filled in with real product examples.
 // The "?url" suffix tells Vite "don't parse this as data, just give me the
 // final URL this file will be served at" — that's what a download link needs.
@@ -24,6 +25,7 @@ const emit = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
   (e: 'imported'): void
 }>()
+const barcodePrintStore = useBarcodePrintStore()
 
 // ── SAMPLE CSV ──
 // The "download" attribute forces the browser to save the file under this
@@ -205,7 +207,7 @@ async function startImport() {
           ? props.suppliers.find(s => s.code.toLowerCase() === row.supplier_code.toLowerCase())
           : undefined
 
-        const { error } = await supabase.from('products').insert({
+        const { data: saved, error } = await supabase.from('products').insert({
           name:           row.name,
           main_category:  row.main_category,
           sub_category:   row.sub_category,
@@ -222,9 +224,11 @@ async function startImport() {
           supplier_id:    supplier?.id || null,
           owner:          row.owner,
           sku:            row.sku,
-        })
+        }).select('id, name, sku, barcode, selling_price, image_url, stock').single()
 
         if (error) importErrors.value.push({ name: row.name, message: friendlyDbError(error) })
+        // Imported items go to the barcode print queue too (one label per unit in stock, at least 1)
+        else if (saved) barcodePrintStore.addToQueue(saved, saved.stock || 1)
       } catch {
         importErrors.value.push({ name: row.name, message: 'Could not save this row — check your connection and try again.' })
       }

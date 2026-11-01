@@ -13,9 +13,11 @@
 // 1. IMPORTS
 // ──────────────────────────────────────────────
 import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import { phoneError } from '../lib/phone'
 import { markConnected, markError } from '../lib/connectionStatus'
 import { useAuthStore } from '../store/auth'
 import PayLaterCustomerBookModal from '../components/modals/PayLaterCustomerBookModal.vue'
@@ -536,14 +538,15 @@ function openAddModal() {
 }
 
 async function submitNewCustomer() {
-  if (!newName.value.trim()) { newShowErr.value = true; return }
+  // Name and a valid mobile number are both required
+  if (!newName.value.trim() || phoneError(newPhone.value)) { newShowErr.value = true; return }
   newSaving.value = true
   newError.value  = ''
 
   const { error } = await supabase.from('pay_later_customers').insert({
     name:      newName.value.trim(),
     id_number: newIdNum.value || null,
-    phone:     newPhone.value || null,
+    phone:     newPhone.value.trim(),
     address:   newAddress.value || null,
   })
 
@@ -781,7 +784,21 @@ function showToastMsg(msg: string) {
 // ──────────────────────────────────────────────
 // 14. INIT
 // ──────────────────────────────────────────────
-onMounted(fetchAll)
+const route = useRoute()
+
+onMounted(async () => {
+  await fetchAll()
+
+  // Arrived from Today Business ("View in Pay Later"): open the right tab,
+  // filter the list down to that customer and expand their row.
+  const wantedId = route.query.customer
+  const wanted = customers.value.find(c => c.id === wantedId)
+  if (wanted) {
+    activeTab.value = wanted.total_owed > 0 ? 'pending' : 'paid'
+    searchQuery.value = wanted.name
+    expandedIds.value = new Set([wanted.id])
+  }
+})
 </script>
 
 
@@ -1186,8 +1203,9 @@ onMounted(fetchAll)
               <input v-model="newIdNum" class="form-input" placeholder="National ID / Passport" />
             </div>
             <div class="form-field">
-              <label class="form-label">Phone Number</label>
-              <input v-model="newPhone" class="form-input" type="tel" placeholder="e.g. 077 123 4567" />
+              <label class="form-label">Mobile Number <span class="req">*</span></label>
+              <input v-model="newPhone" class="form-input" :class="{ error: newShowErr && phoneError(newPhone) }" type="tel" placeholder="e.g. 077 123 4567" />
+              <span v-if="newShowErr && phoneError(newPhone)" class="form-error">{{ phoneError(newPhone) }}</span>
             </div>
             <div class="form-field">
               <label class="form-label">Address</label>

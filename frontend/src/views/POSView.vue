@@ -181,6 +181,34 @@ const canCheckout = computed(() => {
   return amountPaid.value > 0 && amountPaid.value >= total.value
 })
 
+// ── AUTO-FILL "AMOUNT PAID" FOR CARD / BANK ──
+// A card or bank payment is always the exact total (no change given back),
+// so we fill Amount Paid for the cashier. It follows the total live: if the
+// discount or cart changes, the amount updates too. Cash is left manual
+// because customers hand over different notes.
+// If the cashier types their own amount, we stop overwriting it
+// (until they pick a payment method again).
+const AUTO_PAID_METHODS = ['Card', 'Bank']
+const paidEditedByHand = ref(false)
+
+// Round to 2 decimals so we never get 2399.9999999 in the box
+const roundMoney = (n: number) => Math.round(n * 100) / 100
+
+watch(payMethod, (method, oldMethod) => {
+  paidEditedByHand.value = false
+  if (AUTO_PAID_METHODS.includes(method)) {
+    amountPaid.value = roundMoney(total.value)
+  } else if (AUTO_PAID_METHODS.includes(oldMethod)) {
+    amountPaid.value = 0   // leaving card/bank: clear the auto-filled amount
+  }
+})
+
+watch(total, (newTotal) => {
+  if (AUTO_PAID_METHODS.includes(payMethod.value) && !paidEditedByHand.value) {
+    amountPaid.value = roundMoney(newTotal)
+  }
+})
+
 // ── FORMAT CURRENCY ──
 const fmt = (n: number) => `Rs. ${n.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -855,6 +883,7 @@ onMounted(async () => {
               placeholder="0"
               type="number"
               min="0"
+              @input="paidEditedByHand = true"
               @blur="amountPaid = Number(amountPaid) || 0"
             />
           </div>
@@ -885,6 +914,8 @@ onMounted(async () => {
           >
             <svg class="pay-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" v-html="payIcons[method]"></svg>
             {{ method }}
+            <!-- Card machine keeps 2.5% — shown to the cashier; Today Business deducts it from profit -->
+            <span v-if="method === 'Card'" class="fee-tag" title="The card machine keeps 2.5% of card payments. Today Business deducts it from profit.">2.5% fee</span>
           </div>
 
           <!-- Customer Hold: not a payment, so it sits on its own full-width row -->
@@ -1617,6 +1648,24 @@ onMounted(async () => {
 }
 .pay-chip:hover:not(.active) { border-color: var(--text-muted); color: var(--text); }
 .pay-icon { flex-shrink: 0; opacity: .85; }
+
+/* Small yellow "2.5% fee" tag on the Card button */
+.fee-tag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(251, 191, 36, 0.16);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.pos-wrap.light .fee-tag {
+  background: #fef3c7;
+  color: #b45309;
+  border-color: #fcd34d;
+}
 
 /* Customer Hold + Credit Loan — second row below the payment methods, dashed so they read as "different" */
 .pay-chip-hold {

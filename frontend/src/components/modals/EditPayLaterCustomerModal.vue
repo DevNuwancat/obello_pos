@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
+import { phoneError } from '../../lib/phone'
 import Toast from '../Toast.vue'
 
 const props = defineProps<{
@@ -48,7 +49,8 @@ function close() {
 
 async function save() {
   if (!props.customer) return
-  if (!name.value.trim()) { showErrors.value = true; return }
+  // Name and a valid mobile number are both required (so a number can't be blanked later)
+  if (!name.value.trim() || phoneError(phone.value)) { showErrors.value = true; return }
 
   saving.value    = true
   saveError.value = ''
@@ -58,7 +60,7 @@ async function save() {
     .update({
       name:      name.value.trim(),
       id_number: idNumber.value.trim() || null,
-      phone:     phone.value.trim() || null,
+      phone:     phone.value.trim(),
       address:   address.value.trim() || null,
     })
     .eq('id', props.customer.id)
@@ -99,8 +101,9 @@ async function save() {
             <input v-model="idNumber" class="form-input" placeholder="National ID / Passport" />
           </div>
           <div class="form-field">
-            <label class="form-label">Phone Number</label>
-            <input v-model="phone" class="form-input" type="tel" placeholder="e.g. 077 123 4567" />
+            <label class="form-label">Mobile Number *</label>
+            <input v-model="phone" class="form-input" :class="{ error: showErrors && phoneError(phone) }" type="tel" placeholder="e.g. 077 123 4567" />
+            <span v-if="showErrors && phoneError(phone)" class="form-error">{{ phoneError(phone) }}</span>
           </div>
           <div class="form-field">
             <label class="form-label">Address</label>

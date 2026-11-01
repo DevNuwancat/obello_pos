@@ -15,6 +15,8 @@ import { ref, computed, onMounted, watch } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '../store/auth'
 import { markConnected, markError } from '../lib/connectionStatus'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
@@ -29,6 +31,7 @@ interface Transaction {
   id: string
   invoice_no: string
   cashier_id: string | null
+  customer_id: string | null   // Later Pay: who took the goods (pay_later_customers.id)
   subtotal: number
   discount_percent: number
   discount_amount: number
@@ -40,6 +43,10 @@ interface Transaction {
   status: string            // 'completed' | 'refunded' | 'void'
   created_at: string
   users: { full_name: string | null } | null
+  // Filled in only when the sale was cancelled (status = 'void')
+  voided_at: string | null
+  voided_by_name: string | null
+  void_reason: string | null
 }
 
 // One line item belonging to a transaction — used both for the cost
@@ -96,6 +103,9 @@ const selectedDateLabel = computed(() => {
 // ──────────────────────────────────────────────
 const transactions = ref<Transaction[]>([])
 const itemRows      = ref<TransactionItemRow[]>([])
+// Later Pay customers for the loaded sales, by id — so a sale can show "who took it"
+interface PayLaterCustomer { id: string; name: string; phone: string | null; id_number: string | null; address: string | null }
+const customerById  = ref(new Map<string, PayLaterCustomer>())
 const loading       = ref(false)
 const fetchError    = ref('')
 
@@ -114,18 +124,34 @@ async function fetchReportData() {
     const { start, end } = dayRange(selectedDate.value)
 
     // All of the selected day's transactions, newest first, with the cashier's name joined in.
-    // Voided bills are cancelled sales, so they're left out entirely — they
-    // never count toward totals and never appear in the table.
+    // Cancelled (void) sales are loaded too, so the table can show them as
+    // "Cancelled" with who/why. They are NOT counted in any total below —
+    // everything that adds up money uses saleTransactions (completed only).
     const { data: txnData, error: txnError } = await supabase
       .from('transactions')
       .select('*, users(full_name)')
       .gte('created_at', start)
       .lte('created_at', end)
-      .neq('status', 'void')
       .order('created_at', { ascending: false })
 
     if (txnError) { fetchError.value = txnError.message; markError(); return }
     transactions.value = txnData ?? []
+
+    // Who took each Later Pay sale: look the customers up by the ids saved on the sales.
+    // If this lookup fails the report still works, the customer box just says "not found".
+    const customerIds = [...new Set(
+      transactions.value.filter(t => t.payment_method === 'later_pay' && t.customer_id).map(t => t.customer_id as string)
+    )]
+    const customerMap = new Map<string, PayLaterCustomer>()
+    if (customerIds.length > 0) {
+      const { data: custData, error: custError } = await supabase
+        .from('pay_later_customers')
+        .select('id, name, phone, id_number, address')
+        .in('id', customerIds)
+      if (custError) console.warn('Could not load Later Pay customers:', custError.message)
+      for (const c of custData ?? []) customerMap.set(c.id, c as PayLaterCustomer)
+    }
+    customerById.value = customerMap
 
     // Every item sold that day, with its product image + cost price joined in.
     // Used for: the cost/profit calc, the "Items" count column, and the
@@ -291,7 +317,14 @@ const saleTransactions = computed(() =>
   transactions.value.filter(t => t.status === 'completed')
 )
 const laterPayTransactions = computed(() =>
-  transactions.value.filter(t => t.payment_method === 'later_pay')
+  saleTransactions.value.filter(t => t.payment_method === 'later_pay')
+)
+// Cancelled sales — shown in the table + an info card, never in the totals
+const cancelledTransactions = computed(() =>
+  transactions.value.filter(t => t.status === 'void')
+)
+const cancelledTotal = computed(() =>
+  cancelledTransactions.value.reduce((sum, t) => sum + t.total, 0)
 )
 
 
@@ -312,8 +345,29 @@ const todaysCostTotal = computed(() => {
     .reduce((sum, row) => sum + (row.products?.cost_price ?? 0) * row.qty, 0)
 })
 
-// Profit — what's left after cost is taken out of sales
-const todaysProfit = computed(() => todaysSalesTotal.value - todaysCostTotal.value)
+// Card fee — the card machine keeps 2.5% of every CARD payment, so that part
+// of the sale is never ours. It only applies to card sales (not cash/bank/later pay).
+const CARD_FEE_RATE = 0.025
+const CARD_FEE_LABEL = '2.5%'
+function cardFeeOf(t: { payment_method: string; total: number }): number {
+  return t.payment_method === 'card' ? t.total * CARD_FEE_RATE : 0
+}
+const todaysCardFee = computed(() =>
+  saleTransactions.value.reduce((sum, t) => sum + cardFeeOf(t), 0)
+)
+const todaysCardCount = computed(() =>
+  saleTransactions.value.filter(t => t.payment_method === 'card').length
+)
+
+// Profit — what's left after cost AND the card fee are taken out of sales
+const todaysProfit = computed(() => todaysSalesTotal.value - todaysCostTotal.value - todaysCardFee.value)
+
+// Average Profit Margin — what % of every Rs. of sales is profit.
+// profit ÷ sales × 100. If there are no sales yet we show 0 (never divide by zero).
+function marginPct(profit: number, sales: number): number {
+  return sales > 0 ? (profit / sales) * 100 : 0
+}
+const todaysMargin = computed(() => marginPct(todaysProfit.value, todaysSalesTotal.value))
 
 // How many completed sales happened today, Later Pay included
 const todaysSalesCount = computed(() => saleTransactions.value.length)
@@ -353,9 +407,10 @@ const itemsByTxn = computed(() => {
 function billFigures(t: Transaction) {
   const items = itemsByTxn.value.get(t.id) ?? []
   const cost = items.reduce((sum, i) => sum + (i.products?.cost_price ?? 0) * i.qty, 0)
-  const profit = t.total - cost
+  const cardFee = cardFeeOf(t)
+  const profit = t.total - cost - cardFee
   const margin = t.total > 0 ? (profit / t.total) * 100 : 0
-  return { cost, profit, margin }
+  return { cost, cardFee, profit, margin }
 }
 
 
@@ -385,6 +440,60 @@ function toggleExpand(id: string) {
   if (next.has(id)) next.delete(id)
   else next.add(id)
   expandedIds.value = next
+}
+
+
+// ──────────────────────────────────────────────
+// 7b-2. CANCEL A SALE (admin only)
+// A sale added by mistake can be cancelled. It is never deleted: it stays in
+// the list marked "Cancelled" with who cancelled it, when and why, and it is
+// left out of Sales / Cost / Profit. The stock goes back on the shelf.
+// The real work (and the admin check) happens in the database function
+// "void_sale" — this is just the button + the reason pop-up.
+// ──────────────────────────────────────────────
+const auth = useAuthStore()
+const router = useRouter()
+
+// Jump to the Pay Later page, already opened on this customer
+function goToPayLaterCustomer(customerId: string) {
+  router.push({ name: 'pay-later', query: { customer: customerId } })
+}
+
+const voidTarget  = ref<Transaction | null>(null)   // the sale being cancelled (null = pop-up closed)
+const voidReason  = ref('')
+const voidBusy    = ref(false)
+const voidError   = ref('')
+
+function openVoidModal(t: Transaction) {
+  voidTarget.value = t
+  voidReason.value = ''
+  voidError.value  = ''
+}
+
+function closeVoidModal() {
+  if (voidBusy.value) return
+  voidTarget.value = null
+}
+
+async function confirmVoid() {
+  if (!voidTarget.value) return
+  const reason = voidReason.value.trim()
+  if (reason.length < 3) { voidError.value = 'Please write a reason (at least 3 letters).'; return }
+
+  voidBusy.value  = true
+  voidError.value = ''
+  const invoice = voidTarget.value.invoice_no
+  const { error } = await supabase.rpc('void_sale', {
+    p_transaction_id: voidTarget.value.id,
+    p_reason: reason,
+  })
+  voidBusy.value = false
+
+  if (error) { voidError.value = error.message; return }
+
+  voidTarget.value = null
+  showToastMsg(`${invoice} cancelled`)
+  fetchReportData()   // reload so totals and the table update right away
 }
 
 
@@ -549,8 +658,11 @@ function exportPDF() {
   const summaryPairs: [string, string][] = [
     ['Sales', fmtRs(todaysSalesTotal.value)],
     ['Cost of Goods', fmtRs(todaysCostTotal.value)],
-    ['Profit', fmtRs(todaysProfit.value)],
+    [`Card Fee (${CARD_FEE_LABEL} of card sales)`, `- ${fmtRs(todaysCardFee.value)}`],
+    ['Profit (after cost & card fee)', fmtRs(todaysProfit.value)],
+    ['Avg Profit Margin', `${todaysMargin.value.toFixed(1)}%`],
     ['Sales Count', String(todaysSalesCount.value)],
+    ['Cancelled Sales (not counted)', `${cancelledTransactions.value.length} (${fmtRs(cancelledTotal.value)})`],
     ['Later Pay Orders', String(laterPayCount.value)],
     ['Later Pay Owed', fmtRs(laterPayTotal.value)],
     ['Returned Items', String(returnedCount.value)],
@@ -595,8 +707,10 @@ function exportPDF() {
         fmtTime(t.created_at),
         t.invoice_no,
         t.users?.full_name || '—',
-        paymentLabel(t.payment_method),
-        t.status,
+        t.payment_method === 'later_pay' && t.customer_id && customerById.value.get(t.customer_id)
+          ? `${paymentLabel(t.payment_method)} - ${customerById.value.get(t.customer_id)!.name}`
+          : paymentLabel(t.payment_method),
+        t.status === 'void' ? 'CANCELLED' : t.status,
         String(itemCountByTxn.value.get(t.id) ?? 0),
         fmtRs(t.total),
       ]],
@@ -704,14 +818,16 @@ async function exportMonthlyPDF() {
     }
     const totalSales = sales.reduce((s, t) => s + t.total, 0)
     const totalCost  = sales.reduce((s, t) => s + (costOfTxn.get(t.id) ?? 0), 0)
+    const totalFee   = sales.reduce((s, t) => s + cardFeeOf(t), 0)
+    const totalProfit = totalSales - totalCost - totalFee
     const laterPay   = sales.filter(t => t.payment_method === 'later_pay')
 
     // day-by-day
-    const days = new Map<string, { count: number; sales: number; cost: number }>()
+    const days = new Map<string, { count: number; sales: number; cost: number; fee: number }>()
     for (const t of sales) {
       const key = toDateStr(new Date(t.created_at))
-      const d = days.get(key) ?? { count: 0, sales: 0, cost: 0 }
-      d.count += 1; d.sales += t.total; d.cost += costOfTxn.get(t.id) ?? 0
+      const d = days.get(key) ?? { count: 0, sales: 0, cost: 0, fee: 0 }
+      d.count += 1; d.sales += t.total; d.cost += costOfTxn.get(t.id) ?? 0; d.fee += cardFeeOf(t)
       days.set(key, d)
     }
 
@@ -755,7 +871,9 @@ async function exportMonthlyPDF() {
       body: [
         ['Sales', fmtRs(totalSales)],
         ['Cost of Goods', fmtRs(totalCost)],
-        ['Profit', fmtRs(totalSales - totalCost)],
+        [`Card Fee (${CARD_FEE_LABEL} of card sales)`, `- ${fmtRs(totalFee)}`],
+        ['Profit (after cost & card fee)', fmtRs(totalProfit)],
+        ['Avg Profit Margin', `${marginPct(totalProfit, totalSales).toFixed(1)}%`],
         ['Sales Count', String(sales.length)],
         ['Later Pay Orders', String(laterPay.length)],
         ['Later Pay Owed', fmtRs(laterPay.reduce((s, t) => s + t.total, 0))],
@@ -766,14 +884,16 @@ async function exportMonthlyPDF() {
 
     heading('Day by day')
     table({
-      head: [['Date', 'Sales', 'Sales (Rs.)', 'Cost (Rs.)', 'Profit (Rs.)']],
+      head: [['Date', 'Sales', 'Sales (Rs.)', 'Cost (Rs.)', 'Card Fee (Rs.)', 'Profit (Rs.)', 'Margin']],
       body: [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, d]) => [
         new Date(key + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
-        String(d.count), fmtNum(d.sales), fmtNum(d.cost), fmtNum(d.sales - d.cost),
+        String(d.count), fmtNum(d.sales), fmtNum(d.cost), fmtNum(d.fee), fmtNum(d.sales - d.cost - d.fee),
+        `${marginPct(d.sales - d.cost - d.fee, d.sales).toFixed(1)}%`,
       ]),
-      foot: [['Total', String(sales.length), fmtNum(totalSales), fmtNum(totalCost), fmtNum(totalSales - totalCost)]],
+      foot: [['Total', String(sales.length), fmtNum(totalSales), fmtNum(totalCost), fmtNum(totalFee), fmtNum(totalProfit),
+        `${marginPct(totalProfit, totalSales).toFixed(1)}%`]],
       footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
-      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
     })
 
     heading('Payment methods')
@@ -916,11 +1036,23 @@ onMounted(() => {
           <div class="stat-value">{{ fmtRs(todaysCostTotal) }}</div>
           <div class="stat-sub">cost price of items sold</div>
         </div>
+        <!-- Card Fee — 2.5% the card machine keeps on card payments; comes off the profit -->
+        <div class="stat-card fee-card">
+          <div class="stat-label">Card Fee <span class="fee-pill">{{ CARD_FEE_LABEL }}</span></div>
+          <div class="stat-value fee">− {{ fmtRs(todaysCardFee) }}</div>
+          <div class="stat-sub">{{ todaysCardCount }} card sale{{ todaysCardCount === 1 ? '' : 's' }} · deducted from profit</div>
+        </div>
         <!-- Profit -->
         <div class="stat-card">
           <div class="stat-label">Profit</div>
           <div class="stat-value" :class="todaysProfit < 0 ? 'low' : 'profit'">{{ fmtRs(todaysProfit) }}</div>
-          <div class="stat-sub">sales − cost</div>
+          <div class="stat-sub">sales − cost − card fee</div>
+        </div>
+        <!-- Average Profit Margin -->
+        <div class="stat-card">
+          <div class="stat-label">Avg Profit Margin</div>
+          <div class="stat-value" :class="todaysMargin < 0 ? 'low' : 'profit'">{{ todaysMargin.toFixed(1) }}%</div>
+          <div class="stat-sub">profit ÷ sales</div>
         </div>
         <!-- Sales Count -->
         <div class="stat-card">
@@ -934,6 +1066,12 @@ onMounted(() => {
           <div class="stat-label">Later Pay</div>
           <div class="stat-value">{{ laterPayCount }} <span class="stat-value-sub">order{{ laterPayCount === 1 ? '' : 's' }}</span></div>
           <div class="stat-sub">{{ fmtRs(laterPayTotal) }} sold on credit · already in Sales above</div>
+        </div>
+        <!-- Cancelled sales — informational: mistakes that were cancelled, not counted anywhere above -->
+        <div v-if="cancelledTransactions.length > 0" class="stat-card void-card">
+          <div class="stat-label">Cancelled</div>
+          <div class="stat-value">{{ cancelledTransactions.length }} <span class="stat-value-sub">sale{{ cancelledTransactions.length === 1 ? '' : 's' }}</span></div>
+          <div class="stat-sub">{{ fmtRs(cancelledTotal) }} · not counted in Sales</div>
         </div>
         <!-- Loans Given — cash lent to customers (informational, not a sale) -->
         <div class="stat-card loan-card">
@@ -1017,6 +1155,7 @@ onMounted(() => {
                 <!-- Click anywhere on the row to expand/collapse its items -->
                 <tr
                   class="txn-row"
+                  :class="{ 'txn-void': t.status === 'void' }"
                   :style="{ animationDelay: (index * 0.03) + 's' }"
                   @click="toggleExpand(t.id)"
                 >
@@ -1032,7 +1171,7 @@ onMounted(() => {
                     <span class="pay-badge" :class="t.payment_method">{{ paymentLabel(t.payment_method) }}</span>
                   </td>
                   <td>
-                    <span class="status-badge" :class="t.status">{{ t.status }}</span>
+                    <span class="status-badge" :class="t.status">{{ t.status === 'void' ? 'cancelled' : t.status }}</span>
                   </td>
                   <td class="center-cell">
                     <span class="printed-badge" :class="{ yes: t.printed_receipt }">
@@ -1079,8 +1218,39 @@ onMounted(() => {
                       </div>
                       <div v-if="(itemsByTxn.get(t.id) ?? []).length === 0" class="expand-empty">No item details found</div>
 
+                      <!-- Later Pay: who took the goods on credit -->
+                      <div v-if="t.payment_method === 'later_pay'" class="taken-by">
+                        <div class="taken-by-title">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                          Taken on Later Pay by
+                        </div>
+                        <template v-if="t.customer_id && customerById.get(t.customer_id)">
+                          <div class="taken-by-name">{{ customerById.get(t.customer_id)!.name }}</div>
+                          <div class="taken-by-row"><span>Phone</span><strong>{{ customerById.get(t.customer_id)!.phone || '—' }}</strong></div>
+                          <div class="taken-by-row"><span>ID number</span><strong>{{ customerById.get(t.customer_id)!.id_number || '—' }}</strong></div>
+                          <div class="taken-by-row"><span>Address</span><strong>{{ customerById.get(t.customer_id)!.address || '—' }}</strong></div>
+                          <button class="btn-view-customer" @click.stop="goToPayLaterCustomer(t.customer_id!)">
+                            View in Pay Later
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                          </button>
+                        </template>
+                        <div v-else class="taken-by-missing">Customer not found for this sale</div>
+                      </div>
+
+                      <!-- Cancelled sale: who cancelled it, when, and why -->
+                      <div v-if="t.status === 'void'" class="void-info">
+                        <div class="void-info-title">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>
+                          This sale was cancelled
+                        </div>
+                        <div class="void-info-row"><span>Cancelled by</span><strong>{{ t.voided_by_name || '—' }}</strong></div>
+                        <div class="void-info-row"><span>When</span><strong>{{ t.voided_at ? new Date(t.voided_at).toLocaleString('en-GB') : '—' }}</strong></div>
+                        <div class="void-info-row"><span>Reason</span><strong>{{ t.void_reason || '—' }}</strong></div>
+                        <div class="void-info-note">Not counted in Sales, Cost or Profit. Stock was returned to the shelf.</div>
+                      </div>
+
                       <!-- Profit for this invoice: sale total − cost of its items -->
-                      <div class="bill-profit">
+                      <div v-if="t.status !== 'void'" class="bill-profit">
                         <div class="bp-cell">
                           <span class="bp-label">Sale Total</span>
                           <span class="bp-value">{{ fmtRs(t.total) }}</span>
@@ -1088,6 +1258,10 @@ onMounted(() => {
                         <div class="bp-cell">
                           <span class="bp-label">Cost of Items</span>
                           <span class="bp-value">{{ fmtRs(billFigures(t).cost) }}</span>
+                        </div>
+                        <div class="bp-cell" v-if="billFigures(t).cardFee > 0">
+                          <span class="bp-label">Card Fee {{ CARD_FEE_LABEL }}</span>
+                          <span class="bp-value bp-fee">− {{ fmtRs(billFigures(t).cardFee) }}</span>
                         </div>
                         <div class="bp-cell">
                           <span class="bp-label">Profit</span>
@@ -1100,7 +1274,7 @@ onMounted(() => {
                       </div>
 
                       <!-- Reprint this bill — sits under its item list -->
-                      <div class="expand-print-row">
+                      <div v-if="t.status !== 'void'" class="expand-print-row">
                         <button
                           class="btn-reprint"
                           :disabled="printingId === t.id"
@@ -1108,6 +1282,11 @@ onMounted(() => {
                         >
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                           {{ printingId === t.id ? 'Printing…' : 'Print' }}
+                        </button>
+                        <!-- Cancel sale: admins and managers only -->
+                        <button v-if="auth.isAdmin || auth.isManager" class="btn-cancel-sale" @click="openVoidModal(t)">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"/></svg>
+                          Cancel sale
                         </button>
                       </div>
                     </div>
@@ -1121,6 +1300,35 @@ onMounted(() => {
     </main>
 
     <!-- ── TOAST ── -->
+    <!-- ── CANCEL SALE POP-UP: a reason is required ── -->
+    <div v-if="voidTarget" class="void-overlay" @click.self="closeVoidModal">
+      <div class="void-modal" role="dialog" aria-modal="true">
+        <div class="void-modal-title">Cancel this sale?</div>
+        <div class="void-modal-sub">
+          {{ voidTarget.invoice_no }} · {{ fmtRs(voidTarget.total) }}<br />
+          It will stay in the list as <strong>Cancelled</strong> (with your name and the reason), it will no longer count in
+          Sales or Profit, and the items go back into stock.
+        </div>
+        <label class="void-label" for="void-reason">Why is it being cancelled? *</label>
+        <textarea
+          id="void-reason"
+          v-model="voidReason"
+          class="void-textarea"
+          rows="3"
+          maxlength="300"
+          placeholder="e.g. Added to the wrong bill by mistake"
+          :disabled="voidBusy"
+        ></textarea>
+        <div v-if="voidError" class="void-error">{{ voidError }}</div>
+        <div class="void-actions">
+          <button class="btn btn-outline" :disabled="voidBusy" @click="closeVoidModal">Keep sale</button>
+          <button class="btn-void-confirm" :disabled="voidBusy || voidReason.trim().length < 3" @click="confirmVoid">
+            {{ voidBusy ? 'Cancelling…' : 'Cancel sale' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <Toast :message="toastMsg" :show="toastVisible" />
 
   </div>
@@ -1302,6 +1510,86 @@ onMounted(() => {
 }
 
 .stat-card.later-card { border-color: var(--amber-bg); }
+.stat-card.fee-card { border-color: var(--amber-bg); }
+.stat-card.void-card { border-color: var(--red-bg); }
+
+/* ── Later Pay sale: who took it ── */
+.taken-by {
+  margin-top: 4px; padding: 12px 14px; border-radius: 10px;
+  background: var(--amber-bg); border: 1px solid var(--amber);
+  display: flex; flex-direction: column; gap: 5px; font-size: 12.5px;
+}
+.taken-by-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--amber); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; }
+.taken-by-name { font-size: 16px; font-weight: 600; color: var(--text); }
+.taken-by-row { display: flex; gap: 10px; color: var(--text-sub); }
+.taken-by-row span { width: 80px; flex-shrink: 0; }
+.taken-by-row strong { color: var(--text); font-weight: 500; }
+.taken-by-missing { color: var(--text-sub); }
+.btn-view-customer {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: 5px; margin-top: 6px;
+  padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid var(--amber); color: var(--amber);
+  font-size: 11.5px; font-weight: 500; font-family: inherit;
+}
+.btn-view-customer:hover { background: var(--amber-bg); }
+
+/* ── Cancelled sale: faded + struck through row, and its info box ── */
+.txn-row.txn-void td { opacity: .55; }
+.txn-row.txn-void .price-cell { text-decoration: line-through; }
+.void-info {
+  margin-top: 4px; padding: 12px 14px; border-radius: 10px;
+  background: var(--red-bg); border: 1px solid var(--red);
+  display: flex; flex-direction: column; gap: 6px; font-size: 12.5px;
+}
+.void-info-title { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--red); }
+.void-info-row { display: flex; gap: 10px; color: var(--text-sub); }
+.void-info-row span { width: 90px; flex-shrink: 0; }
+.void-info-row strong { color: var(--text); font-weight: 500; }
+.void-info-note { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
+
+.btn-cancel-sale {
+  display: inline-flex; align-items: center; gap: 6px; margin-left: 8px;
+  padding: 7px 14px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: 1px solid var(--red); color: var(--red);
+  font-size: 12.5px; font-family: inherit;
+}
+.btn-cancel-sale:hover { background: var(--red-bg); }
+
+/* ── Cancel pop-up ── */
+.void-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.void-modal {
+  width: 100%; max-width: 440px; padding: 22px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.void-modal-title { font-size: 17px; font-weight: 600; }
+.void-modal-sub { font-size: 12.5px; color: var(--text-sub); line-height: 1.5; }
+.void-label { font-size: 12px; font-weight: 500; margin-top: 4px; }
+.void-textarea {
+  width: 100%; resize: vertical; padding: 10px 12px; border-radius: 8px;
+  background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); font-family: inherit; font-size: 13px;
+}
+.void-textarea:focus { outline: none; border-color: var(--red); }
+.void-error { font-size: 12px; color: var(--red); }
+.void-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.btn-void-confirm {
+  padding: 9px 16px; border-radius: 8px; border: none; cursor: pointer;
+  background: var(--red); color: #fff; font-size: 13px; font-weight: 600; font-family: inherit;
+}
+.btn-void-confirm:disabled { opacity: .4; cursor: not-allowed; }
+.stat-value.fee { color: var(--amber); }
+.fee-pill {
+  margin-left: 4px; padding: 1px 6px; border-radius: 999px;
+  background: var(--amber-bg); color: var(--amber);
+  font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none;
+}
+.bp-value.bp-fee { color: var(--amber); }
 .stat-card.return-card { border-color: var(--red-bg); }
 .stat-card.loan-card { border-color: var(--amber-bg); }
 
