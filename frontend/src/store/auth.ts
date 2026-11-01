@@ -34,13 +34,20 @@ export const useAuthStore = defineStore("auth", {
         }
 
         // Listen for login/logout changes
-        supabase.auth.onAuthStateChange(async (_event, session) => {
+        // IMPORTANT: this callback must NOT await any supabase call.
+        // Supabase holds an internal lock while it runs this function, and
+        // fetchProfile() needs that same lock -> both wait forever (deadlock)
+        // and every page freezes after you come back to the tab.
+        // setTimeout(..., 0) runs fetchProfile AFTER the lock is released.
+        supabase.auth.onAuthStateChange((event, session) => {
           this.user = session?.user ?? null;
-          if (this.user) {
-            await this.fetchProfile();
-          } else {
+          if (!this.user) {
             this.profile = null;
+            return;
           }
+          // A silent token renewal doesn't change who you are, so skip it.
+          if (event === "TOKEN_REFRESHED") return;
+          setTimeout(() => this.fetchProfile(), 0);
         });
       } catch (e) {
         console.error('Supabase init failed:', e)

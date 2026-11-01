@@ -3,7 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import PayLaterModal from '../components/modals/PayLaterModal.vue'
 import { useAuthStore } from "../store/auth"
-import { supabase } from '../lib/supabase'
+import { supabase, ensureFreshSession } from '../lib/supabase'
 
 
 
@@ -501,6 +501,13 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
   checkingOut.value = true
 
   try {
+    // 0. Make sure the login is still valid BEFORE saving anything. If not,
+    //    tell the cashier clearly (the cart stays untouched) instead of freezing.
+    if (!(await ensureFreshSession())) {
+      showToast('Connection problem or session expired. Please check the internet, or log in again.')
+      return
+    }
+
     // 1. Create the transaction (the "receipt") row first — we need its
     //    id before we can save the line items that belong to it.
     const invoiceNo = `INV-${Date.now()}`

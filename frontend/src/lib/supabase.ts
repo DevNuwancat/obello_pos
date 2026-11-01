@@ -38,14 +38,48 @@ let lastCheck = Date.now()
 // This same check now also feeds the shared green/amber/red connection
 // status (see connectionStatus.ts) — if Supabase answers, we're green;
 // if the request itself fails (not just "no session"), we're red.
-function checkSession() {
+const SESSION_TIMEOUT_MS = 8000
+
+// Gives up on a promise after `ms` milliseconds, so a stuck request turns
+// into an error we can show instead of freezing the page forever.
+function withTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms)
+    Promise.resolve(promise).then(
+      (v) => { clearTimeout(timer); resolve(v) },
+      (e) => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
+// Makes sure we have a valid login token RIGHT NOW. Returns true if good.
+// Pages can `await ensureFreshSession()` before an important save.
+// Note: getSession() does NOT throw when it fails, it returns { error },
+// so we have to look at `error` ourselves.
+export async function ensureFreshSession(): Promise<boolean> {
   lastCheck = Date.now()
-  supabase.auth.getSession()
-    .then(() => markConnected())
-    .catch((e) => {
-      console.warn('Session refresh check failed:', e)
-      markError()
-    })
+  try {
+    const { data, error } = await withTimeout(supabase.auth.getSession(), SESSION_TIMEOUT_MS)
+    if (error || !data.session) { markError(); return false }
+
+    // Token about to expire (under 60s left)? Renew it now.
+    const expiresAtMs = (data.session.expires_at ?? 0) * 1000
+    if (expiresAtMs - Date.now() < 60_000) {
+      const { error: refreshError } = await withTimeout(supabase.auth.refreshSession(), SESSION_TIMEOUT_MS)
+      if (refreshError) { markError(); return false }
+    }
+
+    markConnected()
+    return true
+  } catch (e) {
+    console.warn('Session check failed:', e)
+    markError()
+    return false
+  }
+}
+
+function checkSession() {
+  void ensureFreshSession()
 }
 
 // Run once immediately (so the connection light turns green right away
