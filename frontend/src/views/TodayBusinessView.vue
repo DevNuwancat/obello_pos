@@ -61,7 +61,7 @@ interface TransactionItemRow {
   unit_price: number
   discount_label: string | null
   line_total: number
-  products: { cost_price: number; image_url: string | null } | null
+  products: { cost_price: number; image_url: string | null; selling_price?: number; sub_category?: string | null } | null
 }
 
 // ──────────────────────────────────────────────
@@ -160,7 +160,7 @@ async function fetchReportData() {
     if (ids.length > 0) {
       const { data: itemData, error: itemError } = await supabase
         .from('transaction_items')
-        .select('*, products(cost_price, image_url)')
+        .select('*, products(cost_price, image_url, selling_price, sub_category)')
         .in('transaction_id', ids)
       if (itemError) { fetchError.value = itemError.message; markError(); return }
       itemRows.value = (itemData ?? []) as unknown as TransactionItemRow[]
@@ -431,6 +431,118 @@ const filteredTransactions = computed(() => {
 
 
 // ──────────────────────────────────────────────
+// 7a. ITEM-BY-ITEM VIEW (toggle in the toolbar)
+// Instead of one row per bill, show one row per PRODUCT: how many were sold
+// across all of the day's sales, the average price, and the total Rs.
+// It follows the payment filter above, and leaves out cancelled sales and
+// items that were returned (qty 0), so it matches the numbers at the top.
+// ──────────────────────────────────────────────
+const itemView = ref(false)
+
+interface SoldLine { id: string; invoice_no: string; time: string; label: string | null; qty: number; unitPrice: number; total: number }
+
+const soldItems = computed(() => {
+  const saleById = new Map(
+    filteredTransactions.value.filter(t => t.status === 'completed').map(t => [t.id, t])
+  )
+  const map = new Map<string, { key: string; name: string; sku: string | null; image_url: string | null; category: string; listPrice: number | null; qty: number; total: number; lines: SoldLine[] }>()
+
+  for (const row of itemRows.value) {
+    const sale = saleById.get(row.transaction_id)
+    if (!sale || row.qty <= 0) continue
+    // Same product on different bills is grouped together by its product id
+    const key = row.product_id ?? row.product_name
+    const entry = map.get(key) ?? {
+      key, name: row.product_name, sku: row.sku, image_url: row.products?.image_url ?? null,
+      category: row.products?.sub_category?.trim() || 'Uncategorised',
+      listPrice: row.products?.selling_price ?? null,
+      qty: 0, total: 0, lines: [],
+    }
+    entry.qty   += row.qty
+    entry.total += row.line_total
+    // One line per sale: which bill, when, how it was priced (Discount / Super / Original)
+    entry.lines.push({
+      id: row.id, invoice_no: sale.invoice_no, time: sale.created_at,
+      label: row.discount_label, qty: row.qty, unitPrice: row.unit_price, total: row.line_total,
+    })
+    map.set(key, entry)
+  }
+
+  return [...map.values()]
+    .map(e => ({ ...e, billCount: e.lines.length, lines: [...e.lines].sort((a, b) => a.time.localeCompare(b.time)) }))
+    .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name))   // best sellers first
+})
+
+// ── Hover preview of an item's picture (same pop-up as Product List) ──
+const previewImg = ref('')
+const previewX   = ref(0)
+const previewY   = ref(0)
+const PREVIEW_SIZE = 220
+
+function showImgPreview(e: MouseEvent, imageUrl: string | null) {
+  if (!imageUrl) return
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  previewImg.value = imageUrl
+  previewX.value   = rect.right + 14
+  // centre next to the thumbnail, but keep the whole picture on screen
+  previewY.value   = Math.min(
+    Math.max(12, rect.top + rect.height / 2 - PREVIEW_SIZE / 2),
+    window.innerHeight - PREVIEW_SIZE - 12,
+  )
+}
+
+function hideImgPreview() {
+  previewImg.value = ''
+}
+
+// Click an item row to open / close its price breakdown
+const expandedItemKeys = ref(new Set<string>())
+function toggleItem(key: string) {
+  const next = new Set(expandedItemKeys.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  expandedItemKeys.value = next
+}
+
+// ── How the Items view is grouped ──
+// 'category' (default): one row per category, click it to open its items.
+// 'item': the flat list, one row per item.
+const itemGroup = ref<'category' | 'item'>('category')
+
+type SoldItem = (typeof soldItems)['value'][number]
+
+const categoryGroups = computed(() => {
+  const map = new Map<string, { name: string; qty: number; total: number; items: SoldItem[] }>()
+  for (const item of soldItems.value) {
+    const g = map.get(item.category) ?? { name: item.category, qty: 0, total: 0, items: [] }
+    g.qty += item.qty
+    g.total += item.total
+    g.items.push(item)
+    map.set(item.category, g)
+  }
+  return [...map.values()].sort((a, b) => b.total - a.total)   // biggest category first
+})
+
+// Click a category row to open / close the items inside it
+const expandedCategories = ref(new Set<string>())
+function toggleCategory(name: string) {
+  const next = new Set(expandedCategories.value)
+  if (next.has(name)) next.delete(name)
+  else next.add(name)
+  expandedCategories.value = next
+}
+
+const soldItemsQty   = computed(() => soldItems.value.reduce((sum, i) => sum + i.qty, 0))
+const soldItemsTotal = computed(() => soldItems.value.reduce((sum, i) => sum + i.total, 0))
+// What the customers really paid for these bills (after any bill-level discount)
+const soldSalesTotal = computed(() =>
+  filteredTransactions.value.filter(t => t.status === 'completed').reduce((sum, t) => sum + t.total, 0)
+)
+// Items total − sales total = discounts given on the whole bill
+const soldDiscounts  = computed(() => Math.max(0, soldItemsTotal.value - soldSalesTotal.value))
+
+
+// ──────────────────────────────────────────────
 // 7b. ROW EXPAND/COLLAPSE — click a row to see its items
 // ──────────────────────────────────────────────
 const expandedIds = ref(new Set<string>())
@@ -599,6 +711,90 @@ function fmtNum(n: number): string {
   return Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// ──────────────────────────────────────────────
+// CATEGORY SECTION (used by BOTH the daily and the monthly PDF)
+// "How many of each kind of item did we sell?" — a summary per category,
+// then the items sold inside each category.
+// ──────────────────────────────────────────────
+interface CategoryGroup {
+  name: string
+  qty: number
+  total: number
+  items: { name: string; sku: string | null; qty: number; total: number }[]
+}
+
+// rows = sold item lines, saleIds = which bills count (completed sales only).
+// Cancelled bills and returned items (qty 0) are left out.
+function groupByCategory(rows: TransactionItemRow[], saleIds: Set<string>): CategoryGroup[] {
+  const cats = new Map<string, { group: CategoryGroup; items: Map<string, CategoryGroup['items'][number]> }>()
+  for (const row of rows) {
+    if (!saleIds.has(row.transaction_id) || row.qty <= 0) continue
+    const catName = row.products?.sub_category?.trim() || 'Uncategorised'
+    const cat = cats.get(catName) ?? { group: { name: catName, qty: 0, total: 0, items: [] }, items: new Map() }
+    cat.group.qty += row.qty
+    cat.group.total += row.line_total
+
+    const key = row.product_id ?? row.product_name   // same product on many bills = one line
+    const item = cat.items.get(key) ?? { name: row.product_name, sku: row.sku, qty: 0, total: 0 }
+    item.qty += row.qty
+    item.total += row.line_total
+    cat.items.set(key, item)
+    cats.set(catName, cat)
+  }
+  return [...cats.values()]
+    .map(({ group, items }) => ({ ...group, items: [...items.values()].sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name)) }))
+    .sort((a, b) => b.total - a.total)   // biggest category first
+}
+
+// Draws the category section on the PDF starting at startY, returns where it ended
+function drawCategorySections(doc: jsPDF, startY: number, margin: number, groups: CategoryGroup[]): number {
+  if (groups.length === 0) return startY
+  let y = startY
+  const pageH = doc.internal.pageSize.getHeight()
+
+  const heading = (text: string, size: number) => {
+    if (y > pageH - 110) { doc.addPage(); y = 50 }   // don't leave a heading alone at the page bottom
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(size); doc.setTextColor(20, 20, 18)
+    doc.text(text, margin, y)
+    y += 10
+  }
+
+  const itemCount = groups.reduce((sum, g) => sum + g.items.length, 0)
+  const totalQty  = groups.reduce((sum, g) => sum + g.qty, 0)
+  const totalAmt  = groups.reduce((sum, g) => sum + g.total, 0)
+
+  // 1) one row per category
+  heading('Sales by category', 12)
+  autoTable(doc, {
+    startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+    styles: gridStyles, headStyles: gridHead,
+    head: [['Category', 'Different items', 'Qty sold', 'Total (Rs.)', 'Share']],
+    body: groups.map(g => [
+      g.name, String(g.items.length), String(g.qty), fmtNum(g.total),
+      `${totalAmt > 0 ? ((g.total / totalAmt) * 100).toFixed(1) : '0.0'}%`,
+    ]),
+    foot: [['Total', String(itemCount), String(totalQty), fmtNum(totalAmt), '100%']],
+    footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
+    columnStyles: { 1: { halign: 'center' }, 2: { halign: 'center' }, 3: { halign: 'right' }, 4: { halign: 'right' } },
+  })
+  y = (doc as any).lastAutoTable.finalY + 26
+
+  // 2) the items sold inside each category
+  heading('Items sold by category', 12)
+  for (const g of groups) {
+    heading(`${g.name}  -  ${g.qty} pcs  -  Rs. ${fmtNum(g.total)}`, 10)
+    autoTable(doc, {
+      startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+      styles: gridStyles, headStyles: gridHead,
+      head: [['#', 'Item', 'SKU', 'Qty sold', 'Total (Rs.)']],
+      body: g.items.map((it, idx) => [String(idx + 1), it.name, it.sku || '-', String(it.qty), fmtNum(it.total)]),
+      columnStyles: { 0: { cellWidth: 24 }, 3: { halign: 'center' }, 4: { halign: 'right' } },
+    })
+    y = (doc as any).lastAutoTable.finalY + 16
+  }
+  return y + 10
+}
+
 // "obello POS V2.0" on the left, report title + subtitle on the right, thin line under.
 // Returns the y position where the page body should start.
 function drawReportHeader(doc: jsPDF, title: string, subtitle: string): number {
@@ -678,6 +874,10 @@ function exportPDF() {
     columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
   })
   y = (doc as any).lastAutoTable.finalY + 28
+
+  // ── SALES BY CATEGORY — how many of each kind of item sold today ──
+  // Always covers ALL of the day's completed sales (the payment filter doesn't change it)
+  y = drawCategorySections(doc, y, margin, groupByCategory(itemRows.value, new Set(saleTransactions.value.map(t => t.id))))
 
   // ── TRANSACTIONS — each one is a small table, its items in a table right under it ──
   doc.setFont('helvetica', 'bold')
@@ -805,7 +1005,7 @@ async function exportMonthlyPDF() {
     for (let i = 0; i < ids.length; i += 100) {
       const chunk = ids.slice(i, i + 100)
       const rows = await fetchAllRows((from, to) =>
-        supabase.from('transaction_items').select('*, products(cost_price, image_url)')
+        supabase.from('transaction_items').select('*, products(cost_price, image_url, sub_category)')
           .in('transaction_id', chunk).order('id').range(from, to)
       )
       monthItems.push(...(rows as TransactionItemRow[]))
@@ -902,6 +1102,9 @@ async function exportMonthlyPDF() {
       body: [...methods.entries()].map(([method, d]) => [paymentLabel(method), String(d.count), fmtNum(d.total)]),
       columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' } },
     })
+
+    // Sales by category + the items sold inside each category
+    y0 = drawCategorySections(doc, y0, margin, groupByCategory(monthItems, new Set(sales.map(t => t.id))))
 
     if (topProducts.length > 0) {
       heading('Top selling products')
@@ -1103,6 +1306,25 @@ onMounted(() => {
 
         <!-- Right-side buttons -->
         <div class="toolbar-right">
+          <!-- View switcher: Bills = normal bill-by-bill list, Items = one row per product sold -->
+          <div class="view-seg" role="tablist" aria-label="Sales view">
+            <button
+              class="view-seg-btn" :class="{ active: !itemView }"
+              role="tab" :aria-selected="!itemView" @click="itemView = false"
+              title="One row per bill"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="14" y2="17"/></svg>
+              Bills
+            </button>
+            <button
+              class="view-seg-btn" :class="{ active: itemView }"
+              role="tab" :aria-selected="itemView" @click="itemView = true"
+              title="One row per item sold"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>
+              Items
+            </button>
+          </div>
           <button class="btn btn-outline" @click="refreshData" title="Refresh data">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-6.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Refresh
@@ -1128,6 +1350,173 @@ onMounted(() => {
         <div v-if="loading" class="state-msg">Loading today's business…</div>
         <div v-else-if="fetchError" class="state-error">{{ fetchError }}</div>
 
+        <!-- ── ITEMS VIEW: by category (default) or item by item ── -->
+        <template v-else-if="itemView">
+          <!-- Small switch: By category | By item -->
+          <div class="item-subbar">
+            <div class="view-seg view-seg-sm" role="tablist" aria-label="Group items">
+              <button class="view-seg-btn" :class="{ active: itemGroup === 'category' }" role="tab" :aria-selected="itemGroup === 'category'" @click="itemGroup = 'category'">By category</button>
+              <button class="view-seg-btn" :class="{ active: itemGroup === 'item' }" role="tab" :aria-selected="itemGroup === 'item'" @click="itemGroup = 'item'">By item</button>
+            </div>
+            <span class="item-subbar-hint">{{ categoryGroups.length }} categor{{ categoryGroups.length === 1 ? 'y' : 'ies' }} · {{ soldItems.length }} item{{ soldItems.length === 1 ? '' : 's' }}</span>
+          </div>
+
+          <table>
+            <thead v-if="itemGroup === 'category'">
+              <tr>
+                <th style="width:30px"></th>
+                <th>#</th>
+                <th colspan="3">Category</th>
+                <th class="center">Qty Sold</th>
+                <th class="center">Items</th>
+                <th style="text-align:right; padding-right:20px;">Total (Rs.)</th>
+              </tr>
+            </thead>
+            <thead v-else>
+              <tr>
+                <th style="width:30px"></th>
+                <th>#</th>
+                <th>Image</th>
+                <th>Item</th>
+                <th>SKU</th>
+                <th class="center">Qty Sold</th>
+                <th class="center">Bills</th>
+                <th style="text-align:right; padding-right:20px;">Total (Rs.)</th>
+              </tr>
+            </thead>
+
+            <!-- ── BY CATEGORY: one simple row per category, click to see its items ── -->
+            <tbody v-if="itemGroup === 'category'">
+              <tr v-if="categoryGroups.length === 0">
+                <td colspan="8" class="empty-row">No items sold</td>
+              </tr>
+              <template v-for="(cat, index) in categoryGroups" :key="cat.name">
+                <tr class="txn-row" :style="{ animationDelay: (index * 0.02) + 's' }" @click="toggleCategory(cat.name)">
+                  <td class="expand-cell">
+                    <svg class="expand-arrow" :class="{ open: expandedCategories.has(cat.name) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                  </td>
+                  <td>{{ index + 1 }}</td>
+                  <td colspan="3" class="name-cell">{{ cat.name }}</td>
+                  <td class="center-cell item-qty">{{ cat.qty }}</td>
+                  <td class="center-cell date-cell">{{ cat.items.length }}</td>
+                  <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(cat.total) }}</td>
+                </tr>
+
+                <!-- Items of this category; click an item to see how it was priced -->
+                <tr v-if="expandedCategories.has(cat.name)" class="expand-panel-row">
+                  <td colspan="8">
+                    <div class="cat-items">
+                      <template v-for="item in cat.items" :key="item.key">
+                        <div class="cat-item" @click="toggleItem(item.key)">
+                          <div
+                            class="item-img-wrap" :class="{ zoomable: !!item.image_url }"
+                            @click.stop
+                            @mouseenter="(e) => showImgPreview(e, item.image_url)"
+                            @mouseleave="hideImgPreview"
+                          >
+                            <img v-if="item.image_url" :src="item.image_url" class="item-thumb item-thumb-sm" :alt="item.name" />
+                            <div v-else class="item-thumb item-thumb-sm item-thumb-empty">
+                              <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="16" height="16"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                            </div>
+                          </div>
+                          <span class="cat-item-name">{{ item.name }}</span>
+                          <span class="cat-item-sku">{{ item.sku || '—' }}</span>
+                          <span class="cat-item-qty">{{ item.qty }}</span>
+                          <span class="cat-item-total">{{ fmtRs(item.total) }}</span>
+                        </div>
+                        <div v-if="expandedItemKeys.has(item.key)" class="item-breakdown nested">
+                      <div class="item-breakdown-head">
+                        <span class="item-breakdown-title">How {{ item.name }} was sold</span>
+                        <span v-if="item.listPrice" class="item-breakdown-list">List price {{ fmtRs(item.listPrice) }}</span>
+                      </div>
+                      <div v-for="line in item.lines" :key="line.id" class="item-line">
+                        <span class="item-line-time">{{ fmtTime(line.time) }}</span>
+                        <span class="item-line-invoice">{{ line.invoice_no }}</span>
+                        <span class="discount-badge" :class="discountLabelClass(line.label)">{{ line.label || '—' }}</span>
+                        <span class="item-line-calc">{{ line.qty }} × {{ fmtRs(line.unitPrice) }}</span>
+                        <span class="item-line-total">{{ fmtRs(line.total) }}</span>
+                      </div>
+                    </div>
+                      </template>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+
+            <!-- ── BY ITEM: flat list, one row per item ── -->
+            <tbody v-else>
+              <tr v-if="soldItems.length === 0">
+                <td colspan="8" class="empty-row">No items sold</td>
+              </tr>
+              <template v-for="(item, index) in soldItems" :key="item.key">
+                <tr class="txn-row" :style="{ animationDelay: (index * 0.02) + 's' }" @click="toggleItem(item.key)">
+                  <td class="expand-cell">
+                    <svg class="expand-arrow" :class="{ open: expandedItemKeys.has(item.key) }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                  </td>
+                  <td>{{ index + 1 }}</td>
+                  <td class="item-img-cell">
+                    <!-- Hover the picture to see it bigger -->
+                    <div
+                      class="item-img-wrap" :class="{ zoomable: !!item.image_url }"
+                      @mouseenter="(e) => showImgPreview(e, item.image_url)"
+                      @mouseleave="hideImgPreview"
+                    >
+                      <img v-if="item.image_url" :src="item.image_url" class="item-thumb" :alt="item.name" />
+                      <div v-else class="item-thumb item-thumb-empty">
+                        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="name-cell">{{ item.name }}</td>
+                  <td class="sku-cell">{{ item.sku || '—' }}</td>
+                  <td class="center-cell item-qty">{{ item.qty }}</td>
+                  <td class="center-cell date-cell">{{ item.billCount }}</td>
+                  <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(item.total) }}</td>
+                </tr>
+
+                <!-- ── PRICE BREAKDOWN: every sale of this item and how it was priced ── -->
+                <tr v-if="expandedItemKeys.has(item.key)" class="expand-panel-row">
+                  <td colspan="8">
+                    <div class="item-breakdown">
+                      <div class="item-breakdown-head">
+                        <span class="item-breakdown-title">How {{ item.name }} was sold</span>
+                        <span v-if="item.listPrice" class="item-breakdown-list">List price {{ fmtRs(item.listPrice) }}</span>
+                      </div>
+                      <div v-for="line in item.lines" :key="line.id" class="item-line">
+                        <span class="item-line-time">{{ fmtTime(line.time) }}</span>
+                        <span class="item-line-invoice">{{ line.invoice_no }}</span>
+                        <span class="discount-badge" :class="discountLabelClass(line.label)">{{ line.label || '—' }}</span>
+                        <span class="item-line-calc">{{ line.qty }} × {{ fmtRs(line.unitPrice) }}</span>
+                        <span class="item-line-total">{{ fmtRs(line.total) }}</span>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+
+            <!-- Totals: items added up, then bill discounts, then the real sales figure -->
+            <tfoot v-if="soldItems.length > 0">
+              <tr class="foot-row">
+                <td colspan="5" class="foot-label">Items total · {{ soldItems.length }} different item{{ soldItems.length === 1 ? '' : 's' }}</td>
+                <td class="center-cell item-qty">{{ soldItemsQty }}</td>
+                <td></td>
+                <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(soldItemsTotal) }}</td>
+              </tr>
+              <tr v-if="soldDiscounts > 0" class="foot-row">
+                <td colspan="7" class="foot-label">Bill discounts</td>
+                <td class="price-cell foot-minus" style="text-align:right; padding-right:20px;">− {{ fmtRs(soldDiscounts) }}</td>
+              </tr>
+              <tr class="foot-row foot-grand">
+                <td colspan="7" class="foot-label">Sales total</td>
+                <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(soldSalesTotal) }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </template>
+
+        <!-- ── NORMAL VIEW: one row per bill ── -->
         <template v-else>
           <table>
             <thead>
@@ -1328,6 +1717,13 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- ── ITEM PICTURE PREVIEW (hover pop-up, same as Product List) ── -->
+    <Transition name="img-pop">
+      <div v-if="previewImg" class="img-preview-fixed" :style="{ top: previewY + 'px', left: previewX + 'px' }">
+        <img :src="previewImg" class="img-preview-big" />
+      </div>
+    </Transition>
 
     <Toast :message="toastMsg" :show="toastVisible" />
 
@@ -1649,7 +2045,89 @@ onMounted(() => {
 .btn-outline:hover { background: var(--surface2); }
 .btn-primary { background: var(--accent); color: var(--accent-fg); }
 .btn-primary:hover { opacity: .85; }
-.toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+.toolbar-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ── View switcher (Bills | Items) ── */
+.view-seg {
+  display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px;
+  background: var(--surface2); border: 1px solid var(--border);
+}
+.view-seg-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border: none; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--text-sub);
+  font-size: 13px; font-weight: 500; font-family: inherit;
+  transition: background .15s, color .15s;
+}
+.view-seg-btn:hover:not(.active) { color: var(--text); }
+.view-seg-btn.active { background: var(--text); color: var(--bg); font-weight: 600; }
+
+/* ── Small "By category | By item" switch ── */
+.item-subbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid var(--border); }
+.item-subbar-hint { font-size: 12px; color: var(--text-sub); }
+.view-seg-sm .view-seg-btn { padding: 4px 12px; font-size: 12px; }
+
+/* ── Items inside an opened category ── */
+.cat-items { padding: 8px 20px 12px 76px; background: var(--surface2); display: flex; flex-direction: column; gap: 4px; }
+.cat-item {
+  display: grid; grid-template-columns: 44px 1fr 190px 60px 130px; align-items: center; gap: 12px;
+  padding: 7px 12px; border-radius: 8px; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); font-size: 13px;
+}
+.cat-item:hover { border-color: var(--text-sub); }
+.cat-item-name  { font-weight: 500; }
+.cat-item-sku   { font-family: 'DM Mono', monospace; font-size: 11.5px; color: var(--text-sub); }
+.cat-item-qty   { font-family: 'DM Mono', monospace; font-weight: 600; text-align: center; }
+.cat-item-total { font-family: 'DM Mono', monospace; text-align: right; }
+.item-thumb-sm  { width: 40px; height: 40px; border-radius: 6px; }
+.item-breakdown.nested { padding: 4px 0 8px 56px; background: transparent; }
+
+/* ── Item view table ── */
+.item-img-cell { width: 76px; padding: 8px 14px !important; }
+.item-thumb {
+  width: 52px; height: 52px; border-radius: 8px;
+  object-fit: cover; display: block; flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+.item-img-wrap { display: inline-block; }
+.item-img-wrap.zoomable { cursor: zoom-in; }
+
+/* ── Big hover preview (same look + springy zoom as Product List) ── */
+.img-preview-fixed { position: fixed; z-index: 9999; pointer-events: none; }
+.img-preview-big {
+  width: 220px; height: 220px;
+  object-fit: cover; border-radius: 16px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  display: block;
+}
+.img-pop-enter-active { transition: opacity 0.18s ease, transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.img-pop-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.img-pop-enter-from, .img-pop-leave-to { opacity: 0; transform: scale(0.7); }
+
+.item-thumb-empty { display: flex; align-items: center; justify-content: center; background: var(--surface2); color: var(--text-muted); }
+
+/* ── Price breakdown under an item ── */
+.item-breakdown { padding: 14px 20px 16px 76px; display: flex; flex-direction: column; gap: 6px; background: var(--surface2); }
+.item-breakdown-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+.item-breakdown-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.item-breakdown-list { font-size: 11.5px; color: var(--text-sub); }
+.item-line {
+  display: grid; grid-template-columns: 70px 1fr auto 130px 120px; align-items: center; gap: 12px;
+  padding: 8px 12px; border-radius: 8px; background: var(--surface); border: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.item-line-time { color: var(--text-sub); font-size: 12px; }
+.item-line-invoice { font-family: 'DM Mono', monospace; font-size: 11.5px; color: var(--text-sub); }
+.item-line-calc { font-family: 'DM Mono', monospace; text-align: right; color: var(--text-sub); }
+.item-line-total { font-family: 'DM Mono', monospace; text-align: right; font-weight: 600; }
+.item-qty { font-family: 'DM Mono', monospace; font-weight: 600; }
+tfoot .foot-row { background: var(--surface2); border-top: 1px solid var(--border); }
+tfoot .foot-row td { padding: 11px 14px; }
+.foot-label { font-weight: 600; font-size: 12.5px; color: var(--text-sub); padding-left: 20px !important; }
+.foot-minus { color: var(--amber); }
+tfoot .foot-grand td { font-weight: 700; color: var(--text); border-top: 2px solid var(--border); }
+tfoot .foot-grand .foot-label { color: var(--text); }
 
 
 /* ══════════════════════════════════

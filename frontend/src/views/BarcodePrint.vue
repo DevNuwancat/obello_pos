@@ -91,14 +91,20 @@ function printLabels() {
   }
   // 'afterprint' fires once the browser's print dialog closes — whether the
   // user actually printed/saved a PDF or just hit Cancel. The browser gives
-  // us no way to tell those two apart, so once it closes we ask the user
-  // ourselves via the confirm modal below.
+  // us no way to tell those two apart. So instead of a pop-up that has to be
+  // answered, we show a small bar that fades away by itself: after a real
+  // print the user can tap "Clear printed items", after a Cancel they just
+  // ignore it.
   window.addEventListener('afterprint', onAfterPrint, { once: true })
   window.print()
 }
 
+let clearBarTimer: ReturnType<typeof setTimeout> | undefined
+
 function onAfterPrint() {
   showClearModal.value = true
+  clearTimeout(clearBarTimer)
+  clearBarTimer = setTimeout(() => { showClearModal.value = false }, 3000)
 }
 
 // ──────────────────────────────────────────────
@@ -107,6 +113,7 @@ function onAfterPrint() {
 const showClearModal = ref(false)
 
 function confirmClearPrinted() {
+  clearTimeout(clearBarTimer)
   const hadKept = keptCount.value > 0
   store.clearQueue(false) // kept items are protected here too
   showClearModal.value = false
@@ -114,6 +121,7 @@ function confirmClearPrinted() {
 }
 
 function cancelClearPrinted() {
+  clearTimeout(clearBarTimer)
   showClearModal.value = false
 }
 
@@ -343,22 +351,20 @@ function showToastMsg(msg: string) {
     <Toast :message="toastMsg" :show="toastVisible" />
 
     <!-- ══════════════════════════════════════ -->
-    <!--   "CLEAR PRINTED ITEMS?" MODAL         -->
-    <!--   Shown once the print dialog closes  -->
+    <!--   "CLEAR PRINTED ITEMS?" BAR           -->
+    <!--   Small, non-blocking, hides itself   -->
+    <!--   after 3 s — ignore it after Cancel -->
     <!-- ══════════════════════════════════════ -->
-    <div v-if="showClearModal" class="modal-overlay" @click.self="cancelClearPrinted">
-      <div class="modal-box">
-        <h3 class="modal-title">Clear printed items?</h3>
-        <p class="modal-text">Do you want to remove all items from the print queue now that they've been printed?</p>
-        <p v-if="keptCount > 0" class="modal-note">
-          {{ keptCount }} item(s) are ticked "Keep" and will stay in the queue either way.
-        </p>
-        <div class="modal-actions">
-          <button class="btn btn-outline" @click="cancelClearPrinted">No</button>
-          <button class="btn btn-primary" @click="confirmClearPrinted">Yes, clear</button>
-        </div>
+    <Transition name="clear-bar">
+      <div v-if="showClearModal" class="clear-bar">
+        <span class="clear-bar-text">
+          Printed? Remove these from the queue
+          <span v-if="keptCount > 0" class="clear-bar-note">({{ keptCount }} marked "Keep" will stay)</span>
+        </span>
+        <button class="btn btn-primary clear-bar-btn" @click="confirmClearPrinted">Clear printed items</button>
+        <button class="clear-bar-close" title="Dismiss" @click="cancelClearPrinted">&times;</button>
       </div>
-    </div>
+    </Transition>
 
   </div>
 </template>
@@ -547,6 +553,24 @@ function showToastMsg(msg: string) {
 .btn svg { width: 14px; height: 14px; }
 .btn-primary { background: var(--accent); color: var(--accent-fg); }
 .btn-primary:hover { opacity: .85; }
+.clear-bar {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 150;
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px 10px 18px; border-radius: 12px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); box-shadow: 0 8px 30px rgba(0,0,0,.35);
+  font-size: 13px;
+}
+.clear-bar-note { color: var(--text-sub); font-size: 12px; margin-left: 4px; }
+.clear-bar-btn { padding: 7px 14px; font-size: 12.5px; }
+.clear-bar-close {
+  background: none; border: none; cursor: pointer; color: var(--text-sub);
+  font-size: 20px; line-height: 1; padding: 0 6px;
+}
+.clear-bar-close:hover { color: var(--text); }
+.clear-bar-enter-active, .clear-bar-leave-active { transition: opacity .2s, transform .2s; }
+.clear-bar-enter-from, .clear-bar-leave-to { opacity: 0; transform: translate(-50%, 12px); }
+
 .btn-outline { background: var(--surface); border-color: var(--border); color: var(--text); }
 .btn-outline:hover { background: var(--surface2); }
 .toolbar-right { display: flex; gap: 8px; }
