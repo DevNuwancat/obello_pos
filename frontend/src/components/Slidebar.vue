@@ -31,6 +31,7 @@ const navItems = computed(() => {
     { key: 'barcode-print',  label: 'Barcode Print',  path: '/barcode-print' },
     { key: 'today-business', label: 'Today Business', path: '/today-business' },
     { key: 'pay-later',      label: 'Pay Later List', path: '/pay-later' },
+    { key: 'free-gifts',     label: 'Free Gifts',     path: '/free-gifts' },
     { key: 'customer-holds', label: 'Customer Holds', path: '/customer-holds' },
     { key: 'loyal-customers', label: 'Loyal Customers', path: '/loyal-customers' },
     { key: 'return-bin',     label: 'Return Bin',    path: '/return-bin' },
@@ -130,6 +131,7 @@ function reloadPage() {
         <!-- Chart icon -->
         <svg v-else-if="item.key === 'today-business'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         <!-- Pay Later card icon -->
+        <svg v-else-if="item.key === 'free-gifts'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
         <svg v-else-if="item.key === 'pay-later'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
         <!-- Customer Holds icon (bookmark) -->
         <svg v-else-if="item.key === 'customer-holds'" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>

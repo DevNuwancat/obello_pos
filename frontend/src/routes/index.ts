@@ -28,6 +28,8 @@ const router = createRouter({
 
         { path: '/pay-later', name: 'pay-later', component: () => import('../views/PayLaterView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
 
+        { path: '/free-gifts', name: 'free-gifts', component: () => import('../views/FreeGiftsView.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },
+
         { path: '/customer-holds', name: 'customer-holds', component: () => import('../views/CustomerHolds.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager', 'cashier'] } },
 
         { path: '/loyal-customers', name: 'loyal-customers', component: () => import('../views/LoyalCustomerRecord.vue'), meta: { requiresAuth: true, roles: ['admin', 'manager'] } },

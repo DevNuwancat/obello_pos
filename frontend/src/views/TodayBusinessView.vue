@@ -49,6 +49,23 @@ interface Transaction {
   void_reason: string | null
 }
 
+// A free gift given with a bill (table "free_gifts"). It costs the shop money but is not a sale.
+interface FreeGiftRow {
+  id: string
+  transaction_id: string
+  invoice_no: string
+  product_name: string
+  sku: string | null
+  image_url: string | null
+  qty: number
+  cost: number
+  payment_method: string | null
+  customer_name: string | null
+  status: string            // 'pending' | 'released'
+  released_unpaid: boolean
+  created_at: string
+}
+
 // One line item belonging to a transaction — used both for the cost
 // calculation AND for the expanded "show items" panel under each row
 interface TransactionItemRow {
@@ -108,6 +125,10 @@ interface PayLaterCustomer { id: string; name: string; phone: string | null; id_
 const customerById  = ref(new Map<string, PayLaterCustomer>())
 const loading       = ref(false)
 const fetchError    = ref('')
+// Free gifts GIVEN on the selected day (their cost comes off today's profit),
+// and the gifts that belong to the loaded bills (shown inside each bill)
+const dayGifts      = ref<FreeGiftRow[]>([])
+const billGifts     = ref<FreeGiftRow[]>([])
 
 // Midnight → midnight tomorrow for a given "YYYY-MM-DD" date, in local time
 function dayRange(dateStr: string) {
@@ -167,6 +188,18 @@ async function fetchReportData() {
     } else {
       itemRows.value = []
     }
+
+    // Free gifts: by the day they were given, and by the bills on screen.
+    // If this fails the report still works, it just shows no gifts.
+    const [dayRes, billRes] = await Promise.all([
+      supabase.from('free_gifts').select('*').gte('created_at', start).lte('created_at', end),
+      ids.length > 0
+        ? supabase.from('free_gifts').select('*').in('transaction_id', ids)
+        : Promise.resolve({ data: [] as FreeGiftRow[], error: null }),
+    ])
+    if (dayRes.error) console.warn('Could not load free gifts:', dayRes.error.message)
+    dayGifts.value  = (dayRes.data ?? []) as FreeGiftRow[]
+    billGifts.value = (billRes.data ?? []) as FreeGiftRow[]
 
     markConnected()
   } catch {
@@ -359,8 +392,12 @@ const todaysCardCount = computed(() =>
   saleTransactions.value.filter(t => t.payment_method === 'card').length
 )
 
-// Profit — what's left after cost AND the card fee are taken out of sales
-const todaysProfit = computed(() => todaysSalesTotal.value - todaysCostTotal.value - todaysCardFee.value)
+// Free gifts given today — each one cost us its cost price and brought in Rs. 0
+const todaysGiftCount = computed(() => dayGifts.value.reduce((s, g) => s + g.qty, 0))
+const todaysGiftCost  = computed(() => dayGifts.value.reduce((s, g) => s + g.cost * g.qty, 0))
+
+// Profit — what's left after cost, the card fee AND the cost of free gifts are taken out of sales
+const todaysProfit = computed(() => todaysSalesTotal.value - todaysCostTotal.value - todaysCardFee.value - todaysGiftCost.value)
 
 // Average Profit Margin — what % of every Rs. of sales is profit.
 // profit ÷ sales × 100. If there are no sales yet we show 0 (never divide by zero).
@@ -402,15 +439,27 @@ const itemsByTxn = computed(() => {
 })
 
 
+// The free gift of each bill (one per bill), by transaction id
+const giftByTxn = computed(() => {
+  const map = new Map<string, FreeGiftRow[]>()
+  for (const g of billGifts.value) {
+    const list = map.get(g.transaction_id) ?? []
+    list.push(g)
+    map.set(g.transaction_id, list)
+  }
+  return map
+})
+
 // Profit of ONE invoice (shown when its row is opened):
 // what the customer paid (after any bill discount) minus what the items cost you.
 function billFigures(t: Transaction) {
   const items = itemsByTxn.value.get(t.id) ?? []
   const cost = items.reduce((sum, i) => sum + (i.products?.cost_price ?? 0) * i.qty, 0)
   const cardFee = cardFeeOf(t)
-  const profit = t.total - cost - cardFee
+  const giftCost = (giftByTxn.value.get(t.id) ?? []).reduce((sum, g) => sum + g.cost * g.qty, 0)
+  const profit = t.total - cost - cardFee - giftCost
   const margin = t.total > 0 ? (profit / t.total) * 100 : 0
-  return { cost, cardFee, profit, margin }
+  return { cost, cardFee, giftCost, profit, margin }
 }
 
 
@@ -712,6 +761,43 @@ function fmtNum(n: number): string {
 }
 
 // ──────────────────────────────────────────────
+// FREE GIFTS SECTION (used by BOTH the daily and the monthly PDF)
+// How many gifts were given, what they cost, and a list of who got what.
+// ──────────────────────────────────────────────
+function drawGiftSection(doc: jsPDF, startY: number, margin: number, gifts: FreeGiftRow[]): number {
+  if (gifts.length === 0) return startY
+  let y = startY
+  const pageH = doc.internal.pageSize.getHeight()
+  if (y > pageH - 140) { doc.addPage(); y = 50 }
+
+  const count = gifts.reduce((s, g) => s + g.qty, 0)
+  const cost  = gifts.reduce((s, g) => s + g.cost * g.qty, 0)
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(20, 20, 18)
+  doc.text(`Free gifts  -  ${count} given  -  cost Rs. ${fmtNum(cost)}`, margin, y)
+  y += 10
+
+  const sorted = [...gifts].sort((a, b) => a.created_at.localeCompare(b.created_at))
+  autoTable(doc, {
+    startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+    styles: { ...gridStyles, fontSize: 8.5, cellPadding: 5 }, headStyles: gridHead,
+    head: [['#', 'Date', 'Invoice / Customer', 'Gift', 'Payment', 'Status', 'Cost (Rs.)']],
+    body: sorted.map((g, i) => [
+      String(i + 1),
+      new Date(g.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+      g.customer_name ? `${g.invoice_no}\n${g.customer_name}` : g.invoice_no,
+      g.qty > 1 ? `${g.product_name} x${g.qty}` : g.product_name,
+      paymentLabel(g.payment_method ?? ''),
+      g.status === 'pending' ? 'To release' : g.released_unpaid ? 'Released (not paid)' : 'Released',
+      fmtNum(g.cost * g.qty),
+    ]),
+    foot: [['', '', '', 'Total', '', '', fmtNum(cost)]],
+    footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
+    columnStyles: { 0: { cellWidth: 24 }, 6: { halign: 'right' } },
+  })
+  return (doc as any).lastAutoTable.finalY + 26
+}
+
+// ──────────────────────────────────────────────
 // CATEGORY SECTION (used by BOTH the daily and the monthly PDF)
 // "How many of each kind of item did we sell?" — a summary per category,
 // then the items sold inside each category.
@@ -855,7 +941,8 @@ function exportPDF() {
     ['Sales', fmtRs(todaysSalesTotal.value)],
     ['Cost of Goods', fmtRs(todaysCostTotal.value)],
     [`Card Fee (${CARD_FEE_LABEL} of card sales)`, `- ${fmtRs(todaysCardFee.value)}`],
-    ['Profit (after cost & card fee)', fmtRs(todaysProfit.value)],
+    ['Free Gifts', `${todaysGiftCount.value} given - cost ${fmtRs(todaysGiftCost.value)}`],
+    ['Profit (after cost, card fee & gifts)', fmtRs(todaysProfit.value)],
     ['Avg Profit Margin', `${todaysMargin.value.toFixed(1)}%`],
     ['Sales Count', String(todaysSalesCount.value)],
     ['Cancelled Sales (not counted)', `${cancelledTransactions.value.length} (${fmtRs(cancelledTotal.value)})`],
@@ -878,6 +965,9 @@ function exportPDF() {
   // ── SALES BY CATEGORY — how many of each kind of item sold today ──
   // Always covers ALL of the day's completed sales (the payment filter doesn't change it)
   y = drawCategorySections(doc, y, margin, groupByCategory(itemRows.value, new Set(saleTransactions.value.map(t => t.id))))
+
+  // ── FREE GIFTS given today ──
+  y = drawGiftSection(doc, y, margin, dayGifts.value)
 
   // ── TRANSACTIONS — each one is a small table, its items in a table right under it ──
   doc.setFont('helvetica', 'bold')
@@ -1011,6 +1101,15 @@ async function exportMonthlyPDF() {
       monthItems.push(...(rows as TransactionItemRow[]))
     }
 
+    // 2b) free gifts given in the month (their cost comes off the profit)
+    const monthGifts: FreeGiftRow[] = await fetchAllRows((from, to) =>
+      supabase.from('free_gifts').select('*')
+        .gte('created_at', start).lte('created_at', end)
+        .order('created_at', { ascending: true }).order('id').range(from, to)
+    )
+    const giftCount = monthGifts.reduce((s, g) => s + g.qty, 0)
+    const giftCost  = monthGifts.reduce((s, g) => s + g.cost * g.qty, 0)
+
     // 3) work out the numbers (same rules as the daily report)
     const costOfTxn = new Map<string, number>()
     for (const row of monthItems) {
@@ -1019,15 +1118,22 @@ async function exportMonthlyPDF() {
     const totalSales = sales.reduce((s, t) => s + t.total, 0)
     const totalCost  = sales.reduce((s, t) => s + (costOfTxn.get(t.id) ?? 0), 0)
     const totalFee   = sales.reduce((s, t) => s + cardFeeOf(t), 0)
-    const totalProfit = totalSales - totalCost - totalFee
+    const totalProfit = totalSales - totalCost - totalFee - giftCost
     const laterPay   = sales.filter(t => t.payment_method === 'later_pay')
 
     // day-by-day
-    const days = new Map<string, { count: number; sales: number; cost: number; fee: number }>()
+    const days = new Map<string, { count: number; sales: number; cost: number; fee: number; gift: number }>()
     for (const t of sales) {
       const key = toDateStr(new Date(t.created_at))
-      const d = days.get(key) ?? { count: 0, sales: 0, cost: 0, fee: 0 }
+      const d = days.get(key) ?? { count: 0, sales: 0, cost: 0, fee: 0, gift: 0 }
       d.count += 1; d.sales += t.total; d.cost += costOfTxn.get(t.id) ?? 0; d.fee += cardFeeOf(t)
+      days.set(key, d)
+    }
+    // a gift counts on the day it was given (a day with only gifts still gets a row)
+    for (const g of monthGifts) {
+      const key = toDateStr(new Date(g.created_at))
+      const d = days.get(key) ?? { count: 0, sales: 0, cost: 0, fee: 0, gift: 0 }
+      d.gift += g.cost * g.qty
       days.set(key, d)
     }
 
@@ -1072,7 +1178,8 @@ async function exportMonthlyPDF() {
         ['Sales', fmtRs(totalSales)],
         ['Cost of Goods', fmtRs(totalCost)],
         [`Card Fee (${CARD_FEE_LABEL} of card sales)`, `- ${fmtRs(totalFee)}`],
-        ['Profit (after cost & card fee)', fmtRs(totalProfit)],
+        ['Free Gifts', `${giftCount} given - cost ${fmtRs(giftCost)}`],
+        ['Profit (after cost, card fee & gifts)', fmtRs(totalProfit)],
         ['Avg Profit Margin', `${marginPct(totalProfit, totalSales).toFixed(1)}%`],
         ['Sales Count', String(sales.length)],
         ['Later Pay Orders', String(laterPay.length)],
@@ -1084,16 +1191,16 @@ async function exportMonthlyPDF() {
 
     heading('Day by day')
     table({
-      head: [['Date', 'Sales', 'Sales (Rs.)', 'Cost (Rs.)', 'Card Fee (Rs.)', 'Profit (Rs.)', 'Margin']],
+      head: [['Date', 'Sales', 'Sales (Rs.)', 'Cost (Rs.)', 'Card Fee (Rs.)', 'Gift Cost (Rs.)', 'Profit (Rs.)', 'Margin']],
       body: [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, d]) => [
         new Date(key + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }),
-        String(d.count), fmtNum(d.sales), fmtNum(d.cost), fmtNum(d.fee), fmtNum(d.sales - d.cost - d.fee),
-        `${marginPct(d.sales - d.cost - d.fee, d.sales).toFixed(1)}%`,
+        String(d.count), fmtNum(d.sales), fmtNum(d.cost), fmtNum(d.fee), fmtNum(d.gift), fmtNum(d.sales - d.cost - d.fee - d.gift),
+        `${marginPct(d.sales - d.cost - d.fee - d.gift, d.sales).toFixed(1)}%`,
       ]),
-      foot: [['Total', String(sales.length), fmtNum(totalSales), fmtNum(totalCost), fmtNum(totalFee), fmtNum(totalProfit),
+      foot: [['Total', String(sales.length), fmtNum(totalSales), fmtNum(totalCost), fmtNum(totalFee), fmtNum(giftCost), fmtNum(totalProfit),
         `${marginPct(totalProfit, totalSales).toFixed(1)}%`]],
       footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
-      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } },
+      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' }, 7: { halign: 'right' } },
     })
 
     heading('Payment methods')
@@ -1105,6 +1212,9 @@ async function exportMonthlyPDF() {
 
     // Sales by category + the items sold inside each category
     y0 = drawCategorySections(doc, y0, margin, groupByCategory(monthItems, new Set(sales.map(t => t.id))))
+
+    // Free gifts: how many, what they cost, who got them
+    y0 = drawGiftSection(doc, y0, margin, monthGifts)
 
     if (topProducts.length > 0) {
       heading('Top selling products')
@@ -1245,11 +1355,17 @@ onMounted(() => {
           <div class="stat-value fee">− {{ fmtRs(todaysCardFee) }}</div>
           <div class="stat-sub">{{ todaysCardCount }} card sale{{ todaysCardCount === 1 ? '' : 's' }} · deducted from profit</div>
         </div>
+        <!-- Free gifts — given with big bills; their cost comes off the profit -->
+        <div class="stat-card gift-card">
+          <div class="stat-label">Free Gifts</div>
+          <div class="stat-value gift">{{ todaysGiftCount }} <span class="stat-value-sub">gift{{ todaysGiftCount === 1 ? '' : 's' }}</span></div>
+          <div class="stat-sub">cost − {{ fmtRs(todaysGiftCost) }} · deducted from profit</div>
+        </div>
         <!-- Profit -->
         <div class="stat-card">
           <div class="stat-label">Profit</div>
           <div class="stat-value" :class="todaysProfit < 0 ? 'low' : 'profit'">{{ fmtRs(todaysProfit) }}</div>
-          <div class="stat-sub">sales − cost − card fee</div>
+          <div class="stat-sub">sales − cost − card fee − gifts</div>
         </div>
         <!-- Average Profit Margin -->
         <div class="stat-card">
@@ -1553,7 +1669,14 @@ onMounted(() => {
                   </td>
                   <td>{{ index + 1 }}</td>
                   <td class="date-cell">{{ fmtTime(t.created_at) }}</td>
-                  <td class="sku-cell">{{ t.invoice_no }}</td>
+                  <td class="sku-cell">
+                    {{ t.invoice_no }}
+                    <!-- This bill came with a free gift (its cost is already taken off the profit) -->
+                    <span v-if="giftByTxn.get(t.id)?.length" class="row-gift-tag" :title="'Free gift: ' + giftByTxn.get(t.id)![0].product_name + ' · cost ' + fmtRs(billFigures(t).giftCost)">
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
+                      Gift
+                    </span>
+                  </td>
                   <td class="name-cell">{{ t.users?.full_name || '—' }}</td>
                   <td class="center-cell">{{ itemCountByTxn.get(t.id) ?? 0 }}</td>
                   <td>
@@ -1607,6 +1730,21 @@ onMounted(() => {
                       </div>
                       <div v-if="(itemsByTxn.get(t.id) ?? []).length === 0" class="expand-empty">No item details found</div>
 
+                      <!-- Free gift given with this bill -->
+                      <div v-for="g in giftByTxn.get(t.id) ?? []" :key="g.id" class="expand-item gift-line">
+                        <img v-if="g.image_url" :src="g.image_url" class="expand-item-img" />
+                        <div v-else class="expand-item-img expand-item-img-placeholder"></div>
+                        <div class="expand-item-info">
+                          <div class="expand-item-name">{{ g.product_name }}</div>
+                          <div class="expand-item-sku">{{ g.sku || '—' }}</div>
+                        </div>
+                        <span class="gift-badge">FREE GIFT</span>
+                        <span class="gift-state">{{ g.status === 'pending' ? 'To release' : 'Released' }}<template v-if="g.released_unpaid"> · not paid</template></span>
+                        <div class="expand-item-qty">x{{ g.qty }}</div>
+                        <div class="expand-item-price">{{ fmtRs(0) }}</div>
+                        <div class="expand-item-total">cost {{ fmtRs(g.cost * g.qty) }}</div>
+                      </div>
+
                       <!-- Later Pay: who took the goods on credit -->
                       <div v-if="t.payment_method === 'later_pay'" class="taken-by">
                         <div class="taken-by-title">
@@ -1647,6 +1785,10 @@ onMounted(() => {
                         <div class="bp-cell">
                           <span class="bp-label">Cost of Items</span>
                           <span class="bp-value">{{ fmtRs(billFigures(t).cost) }}</span>
+                        </div>
+                        <div class="bp-cell" v-if="billFigures(t).giftCost > 0">
+                          <span class="bp-label">Free Gift Cost</span>
+                          <span class="bp-value bp-fee">− {{ fmtRs(billFigures(t).giftCost) }}</span>
                         </div>
                         <div class="bp-cell" v-if="billFigures(t).cardFee > 0">
                           <span class="bp-label">Card Fee {{ CARD_FEE_LABEL }}</span>
@@ -1908,6 +2050,15 @@ onMounted(() => {
 .stat-card.later-card { border-color: var(--amber-bg); }
 .stat-card.fee-card { border-color: var(--amber-bg); }
 .stat-card.void-card { border-color: var(--red-bg); }
+.stat-card.gift-card { border-color: rgba(167,139,250,0.35); }
+.stat-value.gift { color: #a78bfa; }
+.page-wrap.light .stat-value.gift { color: #7c3aed; }
+.expand-item.gift-line { background: rgba(167,139,250,0.10); border-radius: 10px; }
+.gift-badge { padding: 2px 9px; border-radius: 999px; background: #a78bfa; color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .06em; white-space: nowrap; }
+.page-wrap.light .gift-badge { background: #7c3aed; }
+.row-gift-tag { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: rgba(167,139,250,0.16); color: #a78bfa; border: 1px solid rgba(167,139,250,0.4); font-family: 'DM Sans', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; }
+.page-wrap.light .row-gift-tag { background: #f3efff; color: #7c3aed; border-color: #c4b5fd; }
+.gift-state { font-size: 11px; color: var(--text-sub); white-space: nowrap; }
 
 /* ── Later Pay sale: who took it ── */
 .taken-by {

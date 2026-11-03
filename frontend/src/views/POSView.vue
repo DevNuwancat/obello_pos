@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import PayLaterModal from '../components/modals/PayLaterModal.vue'
+import ProductThumb from '../components/ProductThumb.vue'
 import { useAuthStore } from "../store/auth"
 import { supabase, ensureFreshSession } from '../lib/supabase'
 
@@ -209,6 +210,81 @@ watch(total, (newTotal) => {
   }
 })
 
+// ── FREE GIFT ──
+// A bill of "giftMinAmount" or more earns ONE free gift. The gift is NOT a normal cart line:
+// it sits in "selectedGift", costs the customer Rs. 0, and is saved after the sale by the
+// database function give_free_gift (which also takes 1 off the stock and records the cost).
+const giftMinAmount  = ref(5000)
+const giftProductIds = ref(new Set<string>())
+const selectedGift   = ref<Product | null>(null)
+const showGiftPicker = ref(false)
+const giftSearch     = ref('')
+
+async function fetchGiftConfig() {
+  const [settings, items] = await Promise.all([
+    supabase.from('free_gift_settings').select('min_amount').eq('id', 1).maybeSingle(),
+    supabase.from('free_gift_items').select('product_id'),
+  ])
+  // If this fails the POS still works, it just offers no gifts (and we say why in the console)
+  if (settings.error || items.error) {
+    console.warn('Could not load free gift settings:', settings.error?.message ?? items.error?.message)
+    return
+  }
+  if (settings.data) giftMinAmount.value = Number(settings.data.min_amount)
+  giftProductIds.value = new Set((items.data ?? []).map((r: any) => r.product_id as string))
+}
+
+// The gift list is changed on the Free Gifts page, often while this Cashier tab stays open.
+// So we reload it every time the cashier comes back to this tab (and products too, for stock).
+function reloadGiftConfigWhenVisible() {
+  if (document.visibilityState === 'visible') fetchGiftConfig()
+}
+onMounted(() => document.addEventListener('visibilitychange', reloadGiftConfigWhenVisible))
+onUnmounted(() => document.removeEventListener('visibilitychange', reloadGiftConfigWhenVisible))
+
+// Gifts only go with real sales (not holds or loans) and only once the bill is big enough
+const giftEligible = computed(() =>
+  giftProductIds.value.size > 0 &&
+  cart.value.length > 0 &&
+  !['Customer Hold', 'Credit Loan'].includes(payMethod.value) &&
+  total.value >= giftMinAmount.value
+)
+// How much more the customer must spend to earn the gift (for the little hint)
+const giftShortBy = computed(() => giftMinAmount.value - total.value)
+
+const giftChoices = computed(() => {
+  const q = giftSearch.value.trim().toLowerCase()
+  return PRODUCTS.value
+    .filter(p => giftProductIds.value.has(p.id))
+    .filter(p => !q || p.name.toLowerCase().includes(q) || (p.sku || '').toLowerCase().includes(q) || p.barcode === giftSearch.value.trim())
+})
+
+function openGiftPicker() {
+  giftSearch.value = ''
+  showGiftPicker.value = true
+}
+
+function pickGift(product: Product) {
+  if (product.stock <= 0) { showToast(`${product.name} is out of stock`); return }
+  selectedGift.value = product
+  showGiftPicker.value = false
+  showToast(`Free gift: ${product.name}`)
+}
+
+// Scanner support inside the picker: Enter picks the one matching item
+function pickGiftFromSearch() {
+  if (giftChoices.value.length === 1) pickGift(giftChoices.value[0])
+}
+
+// If the total drops below the amount (items removed, bigger discount, ...) the gift is no longer earned
+watch(giftEligible, (ok) => {
+  if (!ok && selectedGift.value) {
+    selectedGift.value = null
+    showGiftPicker.value = false
+    showToast('Free gift removed — the bill is below Rs. ' + giftMinAmount.value.toLocaleString('en-LK'))
+  }
+})
+
 // ── FORMAT CURRENCY ──
 const fmt = (n: number) => `Rs. ${n.toLocaleString('en-LK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -222,6 +298,11 @@ function showToast(msg: string) {
 // ── CART ACTIONS ──
 // Stock is the ceiling — cart qty can never exceed what's actually in the products table
 function addToCart(product: Product) {
+  // Gift items can only be given as a free gift (once the bill is big enough)
+  if (giftProductIds.value.has(product.id)) {
+    showToast(`${product.name} is a free-gift item — add it from the Free Gift box`)
+    return
+  }
   const existing = cart.value.find(i => i.id === product.id)
   if (existing) {
     // Held items are already out of stock, so they raise the ceiling for their line
@@ -277,6 +358,7 @@ function removeItem(id: string) {
 // "Clear" just empties the cart — held lines stay reserved on the hold (nothing is restocked)
 function clearCart() {
   cart.value = []
+  selectedGift.value = null
 }
 
 // ── CUSTOMER HOLDS ──
@@ -637,6 +719,24 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
       if (loyalError) showToast('⚠️ Sale saved, but the customer record failed: ' + loyalError.message)
     }
 
+    // 3d. Free gift: one database call adds it to this bill, takes 1 off the stock and saves the cost.
+    //     Cash / Card / Bank hand it over now; Later Pay keeps it "pending" until someone releases it.
+    //     A failure here never undoes the sale, it only warns.
+    const giftForBill = selectedGift.value
+    if (giftForBill) {
+      const { error: giftError } = await supabase.rpc('give_free_gift', {
+        p_transaction_id: txn.id,
+        p_product_id: giftForBill.id,
+        p_release_now: payMethod.value !== 'Later Pay',
+      })
+      if (giftError) {
+        showToast('⚠️ Sale saved, but the free gift failed: ' + giftError.message)
+      } else {
+        const gp = PRODUCTS.value.find(p => p.id === giftForBill.id)
+        if (gp) gp.stock = Math.max(0, gp.stock - 1)
+      }
+    }
+
     // 4. Try to print receipt (if enabled) — call the local print agent running on this computer
     const shouldPrint = receiptOverride ?? printReceipt.value
     const isCashSale = paymentMethodCode(payMethod.value).toLowerCase() === 'cash'
@@ -648,11 +748,14 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             invoice_no: invoiceNo,
-            items: itemRows.map(i => ({
-              product_name: i.product_name,
-              quantity: i.qty,
-              unit_price: i.unit_price,
-            })),
+            items: [
+              ...itemRows.map(i => ({
+                product_name: i.product_name,
+                quantity: i.qty,
+                unit_price: i.unit_price,
+              })),
+              ...(giftForBill ? [{ product_name: 'FREE GIFT - ' + giftForBill.name, quantity: 1, unit_price: 0 }] : []),
+            ],
             payment_method: paymentMethodCode(payMethod.value),
             subtotal: subtotal.value,
             discount_amount: discountAmt.value,
@@ -686,6 +789,7 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
   showToast('Order completed · ' + payMethod.value)
   setTimeout(() => {
     cart.value     = []
+    selectedGift.value = null
     discount.value = 0
     amountPaid.value = 0
     payMethod.value = 'Cash'
@@ -696,6 +800,7 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
 // ── INIT ──
 onMounted(async () => {
   await fetchProducts()
+  fetchGiftConfig()
   focusBarcodeInput()
   // Opened from Customer Holds → "Continue in Cart"
   const holdId = new URLSearchParams(window.location.search).get('hold')
@@ -762,7 +867,7 @@ onMounted(async () => {
               class="dropdown-item"
               @mousedown="pickFromSearch(p)"
             >
-              <img :src="p.image_url || ''" class="dropdown-img" />
+              <ProductThumb :src="p.image_url" :size="42" />
               <div class="dropdown-info">
                 <div class="dropdown-name">{{ p.name }}</div>
                 <div class="dropdown-meta">{{ p.sku }} · {{ p.main_category }}</div>
@@ -807,7 +912,7 @@ onMounted(async () => {
               @mouseenter="(e) => showImgPreview(e, item)"
               @mouseleave="hideImgPreview"
             >
-              <img :src="item.image_url || ''" class="cart-img" />
+              <ProductThumb :src="item.image_url" :size="44" />
             </div>
             <div>
               <div class="cart-name">{{ item.name }}</div>
@@ -838,6 +943,33 @@ onMounted(async () => {
             <button class="remove-btn" @click="removeItem(item.id)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
+          </div>
+
+          <!-- Free gift: chosen gift row / "choose" button / hint -->
+          <div v-if="selectedGift" class="gift-row">
+            <div class="cart-img-wrap"
+              @mouseenter="(e) => showImgPreview(e, selectedGift)"
+              @mouseleave="hideImgPreview"
+            >
+              <ProductThumb :src="selectedGift.image_url" :size="44" />
+            </div>
+            <div class="gift-info">
+              <div class="cart-name">{{ selectedGift.name }}</div>
+              <div class="cart-sku">{{ selectedGift.sku }}</div>
+            </div>
+            <span class="gift-tag">FREE GIFT</span>
+            <div class="gift-price">{{ fmt(0) }}</div>
+            <button class="gift-change" @click="openGiftPicker">Change</button>
+            <button class="remove-btn" @click="selectedGift = null">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+          <button v-else-if="giftEligible" class="gift-offer" @click="openGiftPicker">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
+            <span>This bill gets a <b>free gift</b> — tap to choose</span>
+          </button>
+          <div v-else-if="giftProductIds.size > 0 && cart.length > 0 && !['Customer Hold', 'Credit Loan'].includes(payMethod)" class="gift-hint">
+            Add {{ fmt(giftShortBy) }} more to earn a free gift
           </div>
         </div>
       </div>
@@ -1025,6 +1157,46 @@ onMounted(async () => {
       :orderTotal="total"
       @confirm="onHoldConfirm"
     />
+
+    <!-- ── FREE GIFT PICKER ── -->
+    <Transition name="fade">
+      <div v-if="showGiftPicker" class="gift-overlay" @click.self="showGiftPicker = false">
+        <div class="gift-modal">
+          <div class="gift-modal-head">
+            <div>
+              <div class="gift-modal-title">Choose a free gift</div>
+              <div class="gift-modal-sub">One gift per bill · bills of {{ fmt(giftMinAmount) }} or more</div>
+            </div>
+            <button class="gift-x" @click="showGiftPicker = false">✕</button>
+          </div>
+          <input
+            v-model="giftSearch"
+            class="gift-search"
+            placeholder="Scan barcode or search name / SKU…"
+            autocomplete="off"
+            autofocus
+            @keydown.enter="pickGiftFromSearch"
+          />
+          <div class="gift-list">
+            <div v-if="giftChoices.length === 0" class="gift-empty">No gift items found</div>
+            <button
+              v-for="g in giftChoices"
+              :key="g.id"
+              class="gift-choice"
+              :class="{ out: g.stock <= 0 }"
+              @click="pickGift(g)"
+            >
+              <ProductThumb :src="g.image_url" :size="46" />
+              <div class="gift-choice-text">
+                <div class="cart-name">{{ g.name }}</div>
+                <div class="cart-sku">{{ g.sku }}</div>
+              </div>
+              <span class="gift-stock">{{ g.stock > 0 ? g.stock + ' in stock' : 'Out of stock' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- ── TOAST ── -->
     <div class="toast" :class="{ show: toastVisible }">{{ toastMsg }}</div>
@@ -1224,7 +1396,10 @@ onMounted(async () => {
   background: var(--bg-panel);
   border: 1px solid var(--border-mid);
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;            /* many results: scroll inside the card */
+  overscroll-behavior: contain;
+  max-height: min(430px, 60vh); /* about 4-5 rows visible, the rest scrolls */
   box-shadow: var(--shadow-lg);
   display: none;
 }
@@ -1834,4 +2009,61 @@ onMounted(async () => {
   0%   { background: rgba(239, 68, 68, 0.15); }
   100% { background: var(--bg-input); }
 }
+
+/* ── FREE GIFT (purple) ── */
+.pos-wrap { --gift: #a78bfa; --gift-bg: rgba(167,139,250,0.12); --gift-border: rgba(167,139,250,0.4); }
+.pos-wrap.light { --gift: #7c3aed; --gift-bg: #f3efff; --gift-border: #c4b5fd; }
+.gift-offer {
+  width: 100%; display: flex; align-items: center; justify-content: center; gap: 9px;
+  margin-top: 10px; padding: 13px 14px; border-radius: 12px; cursor: pointer;
+  background: var(--gift-bg); border: 1.5px dashed var(--gift-border); color: var(--gift);
+  font-size: 13px; font-family: 'DM Sans', sans-serif; transition: transform .15s, border-color .15s;
+}
+.gift-offer:hover { transform: translateY(-1px); border-style: solid; }
+.gift-hint { margin-top: 10px; text-align: center; font-size: 12px; color: var(--text-muted); }
+.gift-row {
+  display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 12px;
+  border-radius: 12px; background: var(--gift-bg); border: 1.5px solid var(--gift-border);
+}
+.gift-info { flex: 1; min-width: 0; }
+.gift-tag {
+  padding: 2px 9px; border-radius: 999px; background: var(--gift); color: #fff;
+  font-size: 10px; font-weight: 700; letter-spacing: .06em; white-space: nowrap;
+}
+.gift-price { font-size: 13px; font-weight: 600; color: var(--gift); min-width: 82px; text-align: right; }
+.gift-change {
+  background: transparent; border: 1px solid var(--gift-border); color: var(--gift);
+  border-radius: 7px; padding: 4px 10px; font-size: 11.5px; cursor: pointer; font-family: 'DM Sans', sans-serif;
+}
+.gift-overlay {
+  position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.55); backdrop-filter: blur(5px);
+  display: flex; align-items: center; justify-content: center;
+}
+.gift-modal {
+  width: 460px; max-width: calc(100vw - 40px); max-height: 80vh; display: flex; flex-direction: column;
+  background: var(--bg-panel); border: 1px solid var(--border-mid); border-radius: 18px; padding: 20px; gap: 14px;
+}
+.gift-modal-head { display: flex; justify-content: space-between; align-items: flex-start; }
+.gift-modal-title { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 16px; color: var(--text); }
+.gift-modal-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+.gift-x { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-muted); border-radius: 6px; width: 28px; height: 28px; cursor: pointer; }
+.gift-search {
+  padding: 10px 13px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text); font-size: 13.5px; font-family: 'DM Sans', sans-serif; outline: none;
+}
+.gift-search:focus { border-color: var(--gift-border); }
+.gift-list { overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.gift-empty { text-align: center; color: var(--text-muted); font-size: 13px; padding: 24px 0; }
+.gift-choice {
+  display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 12px; cursor: pointer;
+  background: var(--bg-card); border: 1px solid var(--border); text-align: left; color: var(--text);
+  transition: border-color .15s, background .15s;
+}
+.gift-choice:hover { border-color: var(--gift-border); background: var(--gift-bg); }
+.gift-choice.out { opacity: .5; }
+.gift-choice-img { width: 46px; height: 46px; border-radius: 8px; object-fit: cover; background: var(--bg-hover); flex-shrink: 0; }
+.gift-choice-text { flex: 1; min-width: 0; }
+.gift-stock { font-size: 11.5px; color: var(--gift); white-space: nowrap; }
+.fade-enter-active, .fade-leave-active { transition: opacity .2s ease; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>
