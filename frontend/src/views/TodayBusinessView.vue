@@ -68,6 +68,17 @@ interface FreeGiftRow {
   created_at: string
 }
 
+// A correction of a bill's payment method (table "payment_method_changes")
+interface PaymentChange {
+  id: string
+  transaction_id: string
+  old_method: string
+  new_method: string
+  note: string | null
+  changed_by_name: string | null
+  changed_at: string
+}
+
 // One line item belonging to a transaction — used both for the cost
 // calculation AND for the expanded "show items" panel under each row
 interface TransactionItemRow {
@@ -131,6 +142,8 @@ const fetchError    = ref('')
 // Free gifts GIVEN on the selected day (their cost comes off today's profit),
 // and the gifts that belong to the loaded bills (shown inside each bill)
 const dayGifts      = ref<FreeGiftRow[]>([])
+// Corrections of payment methods, for the bills on screen (newest first)
+const paymentChanges = ref<PaymentChange[]>([])
 const billGifts     = ref<FreeGiftRow[]>([])
 
 // Midnight → midnight tomorrow for a given "YYYY-MM-DD" date, in local time
@@ -203,6 +216,16 @@ async function fetchReportData() {
     if (dayRes.error) console.warn('Could not load free gifts:', dayRes.error.message)
     dayGifts.value  = (dayRes.data ?? []) as FreeGiftRow[]
     billGifts.value = (billRes.data ?? []) as FreeGiftRow[]
+
+    // Payment method corrections for these bills (so a bill can show "changed from Cash to Card")
+    if (ids.length > 0) {
+      const { data: chData, error: chError } = await supabase
+        .from('payment_method_changes').select('*').in('transaction_id', ids).order('changed_at', { ascending: false })
+      if (chError) console.warn('Could not load payment changes:', chError.message)
+      paymentChanges.value = (chData ?? []) as PaymentChange[]
+    } else {
+      paymentChanges.value = []
+    }
 
     markConnected()
   } catch {
@@ -638,6 +661,68 @@ function closeVoidModal() {
   if (voidBusy.value) return
   voidTarget.value = null
 }
+
+// ── FIX A WRONG PAYMENT METHOD (admin + manager) ──
+// e.g. a card payment that was rung up as cash. Cash / Card / Bank can be swapped;
+// Later Pay is not allowed (it carries a customer and a credit balance).
+const SWAPPABLE_METHODS = ['cash', 'card', 'bank']
+const payTarget = ref<Transaction | null>(null)    // the bill being fixed (null = pop-up closed)
+const payNewMethod = ref('')
+const payNote   = ref('')
+const payBusy   = ref(false)
+const payError  = ref('')
+
+function canEditPayment(t: Transaction): boolean {
+  return (auth.isAdmin || auth.isManager) && t.status === 'completed' && SWAPPABLE_METHODS.includes(t.payment_method)
+}
+
+function openPayModal(t: Transaction) {
+  payTarget.value = t
+  payNewMethod.value = ''
+  payNote.value = ''
+  payError.value = ''
+}
+
+function closePayModal() {
+  if (payBusy.value) return
+  payTarget.value = null
+}
+
+// What changes in the profit if this bill moves to the chosen method (only the card fee depends on the method)
+const payFeeChange = computed(() => {
+  const t = payTarget.value
+  if (!t || !payNewMethod.value) return 0
+  return cardFeeOf({ payment_method: payNewMethod.value, total: t.total }) - cardFeeOf(t)
+})
+
+async function confirmPayChange() {
+  const t = payTarget.value
+  if (!t || !payNewMethod.value) return
+  payBusy.value  = true
+  payError.value = ''
+  const { error } = await supabase.rpc('change_payment_method', {
+    p_transaction_id: t.id,
+    p_new_method: payNewMethod.value,
+    p_note: payNote.value,
+  })
+  payBusy.value = false
+  if (error) { payError.value = error.message; return }
+
+  payTarget.value = null
+  showToastMsg(`${t.invoice_no}: payment changed to ${paymentLabel(payNewMethod.value)}`)
+  fetchReportData()   // reload so the totals, card fee and profit update right away
+}
+
+// The corrections of each bill, by transaction id
+const changesByTxn = computed(() => {
+  const map = new Map<string, PaymentChange[]>()
+  for (const c of paymentChanges.value) {
+    const list = map.get(c.transaction_id) ?? []
+    list.push(c)
+    map.set(c.transaction_id, list)
+  }
+  return map
+})
 
 async function confirmVoid() {
   if (!voidTarget.value) return
@@ -1696,6 +1781,11 @@ onMounted(() => {
                   <td class="center-cell">{{ itemCountByTxn.get(t.id) ?? 0 }}</td>
                   <td>
                     <span class="pay-badge" :class="t.payment_method">{{ paymentLabel(t.payment_method) }}</span>
+                    <span v-if="changesByTxn.get(t.id)?.length" class="pay-edited" :title="'Changed from ' + paymentLabel(changesByTxn.get(t.id)![changesByTxn.get(t.id)!.length - 1].old_method)">edited</span>
+                    <!-- small edit button: fix a wrongly entered payment method -->
+                    <button v-if="canEditPayment(t)" class="pay-edit-btn" title="Fix payment method" @click.stop="openPayModal(t)">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    </button>
                   </td>
                   <td>
                     <span class="status-badge" :class="t.status">{{ t.status === 'void' ? 'cancelled' : t.status }}</span>
@@ -1758,6 +1848,19 @@ onMounted(() => {
                         <div class="expand-item-qty">x{{ g.qty }}</div>
                         <div class="expand-item-price">{{ fmtRs(0) }}</div>
                         <div class="expand-item-total">cost {{ fmtRs(g.cost * g.qty) }}</div>
+                      </div>
+
+                      <!-- Payment method was corrected: what it was, who changed it, when -->
+                      <div v-if="changesByTxn.get(t.id)?.length" class="pay-change-info">
+                        <div class="pay-change-title">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          Payment method was corrected
+                        </div>
+                        <div v-for="c in changesByTxn.get(t.id)" :key="c.id" class="pay-change-row">
+                          <strong>{{ paymentLabel(c.old_method) }} → {{ paymentLabel(c.new_method) }}</strong>
+                          <span>by {{ c.changed_by_name || '—' }} · {{ new Date(c.changed_at).toLocaleString('en-GB') }}</span>
+                          <em v-if="c.note">“{{ c.note }}”</em>
+                        </div>
                       </div>
 
                       <!-- Later Pay: who took the goods on credit -->
@@ -1871,6 +1974,54 @@ onMounted(() => {
           <button class="btn btn-outline" :disabled="voidBusy" @click="closeVoidModal">Keep sale</button>
           <button class="btn-void-confirm" :disabled="voidBusy || voidReason.trim().length < 3" @click="confirmVoid">
             {{ voidBusy ? 'Cancelling…' : 'Cancel sale' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── FIX PAYMENT METHOD POP-UP ── -->
+    <div v-if="payTarget" class="void-overlay" @click.self="closePayModal">
+      <div class="void-modal" role="dialog" aria-modal="true">
+        <div class="void-modal-title">Fix the payment method</div>
+        <div class="void-modal-sub">
+          {{ payTarget.invoice_no }} · {{ fmtRs(payTarget.total) }}<br />
+          Currently paid by <strong>{{ paymentLabel(payTarget.payment_method) }}</strong>. Choose how the customer really paid.
+        </div>
+
+        <div class="pay-choices">
+          <button
+            v-for="m in SWAPPABLE_METHODS"
+            :key="m"
+            class="pay-choice"
+            :class="{ active: payNewMethod === m }"
+            :disabled="m === payTarget.payment_method || payBusy"
+            @click="payNewMethod = m"
+          >
+            {{ paymentLabel(m) }}
+            <span v-if="m === 'card'" class="fee-pill">{{ CARD_FEE_LABEL }} fee</span>
+            <span v-if="m === payTarget.payment_method" class="pay-choice-now">current</span>
+          </button>
+        </div>
+
+        <div v-if="payNewMethod && payFeeChange !== 0" class="pay-impact" :class="{ gain: payFeeChange < 0 }">
+          <template v-if="payFeeChange > 0">Card fee {{ fmtRs(payFeeChange) }} will be deducted from this bill's profit.</template>
+          <template v-else>The card fee of {{ fmtRs(-payFeeChange) }} will no longer be deducted — profit goes up by that.</template>
+        </div>
+
+        <label class="void-label" for="pay-note">Note (optional)</label>
+        <input
+          id="pay-note"
+          v-model="payNote"
+          class="pay-note"
+          maxlength="200"
+          placeholder="e.g. Customer paid by card, cashier chose cash"
+          :disabled="payBusy"
+        />
+        <div v-if="payError" class="void-error">{{ payError }}</div>
+        <div class="void-actions">
+          <button class="btn btn-outline" :disabled="payBusy" @click="closePayModal">Cancel</button>
+          <button class="btn-pay-save" :disabled="payBusy || !payNewMethod" @click="confirmPayChange">
+            {{ payBusy ? 'Saving…' : 'Change payment method' }}
           </button>
         </div>
       </div>
@@ -2149,6 +2300,43 @@ onMounted(() => {
 }
 .btn-void-confirm:disabled { opacity: .4; cursor: not-allowed; }
 .stat-value.fee { color: var(--amber); }
+
+/* ── Fix payment method ── */
+.pay-edit-btn {
+  margin-left: 6px; width: 22px; height: 22px; border-radius: 6px; vertical-align: middle;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-muted);
+  transition: color .15s, background .15s, border-color .15s;
+}
+.pay-edit-btn:hover { color: var(--text); background: var(--surface2); border-color: var(--text-muted); }
+.pay-edited { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--amber-bg); color: var(--amber); vertical-align: middle; }
+.pay-change-info { margin: 10px 0; padding: 10px 14px; border-radius: 10px; background: var(--amber-bg); border: 1px solid var(--amber); color: var(--text); font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+.pay-change-title { display: flex; align-items: center; gap: 7px; font-weight: 600; color: var(--amber); }
+.pay-change-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.pay-change-row span { color: var(--text-sub); font-size: 12px; }
+.pay-change-row em { color: var(--text-sub); }
+.pay-choices { display: flex; gap: 8px; margin-top: 4px; }
+.pay-choice {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 11px 8px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface2); color: var(--text); font-size: 13px; font-weight: 500;
+  font-family: inherit; cursor: pointer; transition: transform .15s, border-color .15s, background .15s;
+}
+.pay-choice:hover:not(:disabled) { transform: translateY(-1px); border-color: var(--text-muted); }
+.pay-choice.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.pay-choice:disabled { opacity: .45; cursor: not-allowed; }
+.pay-choice-now { font-size: 10px; color: var(--text-muted); }
+.pay-impact { padding: 9px 12px; border-radius: 8px; font-size: 12px; background: var(--amber-bg); color: var(--amber); }
+.pay-impact.gain { background: var(--green-bg); color: var(--green); }
+.pay-note {
+  width: 100%; padding: 10px 12px; border-radius: 8px; background: var(--surface2); color: var(--text);
+  border: 1px solid var(--border); font-family: inherit; font-size: 13px;
+}
+.pay-note:focus { outline: none; border-color: var(--text-muted); }
+.btn-pay-save {
+  padding: 9px 16px; border-radius: 8px; border: none; cursor: pointer;
+  background: var(--accent); color: var(--accent-fg); font-size: 13px; font-weight: 600; font-family: inherit;
+}
+.btn-pay-save:disabled { opacity: .4; cursor: not-allowed; }
 .fee-pill {
   margin-left: 4px; padding: 1px 6px; border-radius: 999px;
   background: var(--amber-bg); color: var(--amber);

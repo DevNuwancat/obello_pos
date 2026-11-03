@@ -19,6 +19,7 @@ import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
 import { phoneError, whatsappError, whatsappLink, normalizePhone } from '../lib/phone'
 import PhoneFields from '../components/PhoneFields.vue'
+import PayLaterRecovery from '../components/PayLaterRecovery.vue'
 import TagPicker from '../components/TagPicker.vue'
 import TagChips from '../components/TagChips.vue'
 import TagFilter from '../components/TagFilter.vue'
@@ -303,15 +304,20 @@ const paidAccounts    = computed(() => customers.value.filter(c => hasCredit(c) 
 // ──────────────────────────────────────────────
 // 7. TABS / SEARCH / SORT
 // ──────────────────────────────────────────────
-type Tab = 'pending' | 'paid'
+type Tab = 'pending' | 'paid' | 'recovery'
 const activeTab = ref<Tab>('pending')
 
 const { tags, loadTags, tagsOf, matchesTag, tagSearchText, setCustomerTags } = useCustomerTags()
 const tagFilter = ref<string | null>(null)
 
 const searchQuery = ref('')
-type SortMode = 'latest' | 'az'
+type SortMode = 'latest' | 'az' | 'balance_desc' | 'balance_asc'
 const sortMode = ref<SortMode>('latest')
+
+// Clicking the "Balance" column header: 1st click = biggest first, 2nd = smallest first, 3rd = back to Latest
+function cycleBalanceSort() {
+  sortMode.value = sortMode.value === 'balance_desc' ? 'balance_asc' : sortMode.value === 'balance_asc' ? 'latest' : 'balance_desc'
+}
 
 // Newest activity = whichever is more recent between last bill and last payment
 function lastActivity(c: CustomerBalance): string | null {
@@ -344,6 +350,10 @@ const filteredCustomers = computed(() => {
 
   if (sortMode.value === 'az') {
     list = [...list].sort((a, b) => a.name.localeCompare(b.name))
+  } else if (sortMode.value === 'balance_desc' || sortMode.value === 'balance_asc') {
+    // Credit balance: biggest first (desc) or smallest first (asc). Same balance → A–Z, so the order is steady.
+    const dir = sortMode.value === 'balance_desc' ? -1 : 1
+    list = [...list].sort((a, b) => dir * (Number(a.total_owed) - Number(b.total_owed)) || a.name.localeCompare(b.name))
   } else {
     list = [...list].sort((a, b) => {
       const da = lastActivity(a)
@@ -671,6 +681,14 @@ function fmtDate(d: string | null): string {
 }
 
 
+// Credit collected (payments received) from a date up to now — used in the PDF summary.
+// Uses the payments already loaded on this page (the newest ones come first).
+function collectedSince(from: Date): number {
+  return payments.value
+    .filter(p => new Date(p.paid_at).getTime() >= from.getTime())
+    .reduce((sum, p) => sum + Number(p.amount), 0)
+}
+
 // ──────────────────────────────────────────────
 // 12. EXPORT CSV
 // ──────────────────────────────────────────────
@@ -753,6 +771,8 @@ function exportPDF() {
     ['Total Collected', fmtRs(totalCollected.value)],
     ['Pending Accounts', String(pendingAccounts.value)],
     ['Paid Accounts', String(paidAccounts.value)],
+    ['Collected Today', fmtRs(collectedSince(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())))],
+    ['Collected This Month', fmtRs(collectedSince(new Date(new Date().getFullYear(), new Date().getMonth(), 1)))],
   ]
   autoTable(doc, {
     startY: y,
@@ -981,7 +1001,15 @@ onMounted(async () => {
         <button class="tab" :class="{ active: activeTab === 'paid' }" @click="activeTab = 'paid'">
           Paid <span class="tab-count">{{ paidAccounts }}</span>
         </button>
+        <button class="tab" :class="{ active: activeTab === 'recovery' }" @click="activeTab = 'recovery'">
+          Recovery
+        </button>
       </div>
+
+      <!-- ── RECOVERY TAB: credit collected per day / per month ── -->
+      <PayLaterRecovery v-if="activeTab === 'recovery'" />
+
+      <template v-else>
 
       <!-- ── TOOLBAR ── -->
       <div class="toolbar">
@@ -993,6 +1021,8 @@ onMounted(async () => {
         <div class="sort-chips">
           <button class="sort-chip" :class="{ active: sortMode === 'latest' }" @click="sortMode = 'latest'">Latest</button>
           <button class="sort-chip" :class="{ active: sortMode === 'az' }" @click="sortMode = 'az'">A – Z</button>
+          <button class="sort-chip" :class="{ active: sortMode === 'balance_desc' }" title="Biggest balance first" @click="sortMode = 'balance_desc'">Balance ↓</button>
+          <button class="sort-chip" :class="{ active: sortMode === 'balance_asc' }" title="Smallest balance first" @click="sortMode = 'balance_asc'">Balance ↑</button>
         </div>
 
         <div class="toolbar-right">
@@ -1046,7 +1076,10 @@ onMounted(async () => {
                 <th>Phone</th>
                 <th style="text-align:right">Total Credit</th>
                 <th style="text-align:right">Total Paid</th>
-                <th style="text-align:right">Balance</th>
+                <th class="th-sort" style="text-align:right" title="Click to sort by balance" @click="cycleBalanceSort">
+                  Balance
+                  <span class="sort-arrow" :class="{ on: sortMode === 'balance_desc' || sortMode === 'balance_asc' }">{{ sortMode === 'balance_asc' ? '▲' : sortMode === 'balance_desc' ? '▼' : '⇅' }}</span>
+                </th>
                 <th>Last Activity</th>
                 <th style="text-align:right; padding-right:20px;">Action</th>
               </tr>
@@ -1217,6 +1250,7 @@ onMounted(async () => {
           </table>
         </template>
       </div>
+      </template>
     </main>
 
     <!-- ══════════════════════════════════════ -->
@@ -1495,6 +1529,10 @@ onMounted(async () => {
 
 .sort-chips { display: flex; gap: 6px; }
 .sort-chip { padding: 7px 13px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text-sub); font-size: 12px; font-family: 'DM Sans', sans-serif; cursor: pointer; transition: all .15s; }
+.th-sort { cursor: pointer; user-select: none; }
+.th-sort:hover { color: var(--text); }
+.sort-arrow { margin-left: 4px; font-size: 10px; opacity: .45; }
+.sort-arrow.on { opacity: 1; color: var(--accent); }
 .sort-chip.active { border-color: var(--accent); background: var(--accent); color: var(--accent-fg); font-weight: 600; }
 
 .btn { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 8px; font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: opacity .15s, background .15s; }

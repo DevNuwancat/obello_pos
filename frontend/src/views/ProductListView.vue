@@ -467,8 +467,28 @@ async function deleteProduct(id: string) {
 // ──────────────────────────────────────────────
 // 15. VIEW / BARCODE QUEUE ACTIONS
 // ──────────────────────────────────────────────
-function viewProduct(p: Product) {
-  showToastMsg(`${p.name} — SKU: ${p.sku || '—'}`)
+// Copies the product's SKU to the clipboard so it can be pasted anywhere.
+// The icon turns into a green tick for a moment, so you can see it worked.
+const copiedId = ref<string | null>(null)
+
+async function copySku(p: Product) {
+  if (!p.sku) { showToastMsg('This product has no SKU'); return }
+  try {
+    await navigator.clipboard.writeText(p.sku)
+  } catch {
+    // Older browsers / blocked clipboard: copy through a hidden text box instead
+    const box = document.createElement('textarea')
+    box.value = p.sku
+    box.style.position = 'fixed'
+    box.style.opacity = '0'
+    document.body.appendChild(box)
+    box.select()
+    document.execCommand('copy')
+    document.body.removeChild(box)
+  }
+  copiedId.value = p.id
+  setTimeout(() => { if (copiedId.value === p.id) copiedId.value = null }, 1500)
+  showToastMsg(`SKU copied: ${p.sku}`)
 }
 
 // Adds this product to the barcode print queue (defaults the label count
@@ -817,9 +837,10 @@ onMounted(() => {
                     <button class="action-btn" title="Add to barcode print queue" @click="addToBarcodeQueue(p)">
                       <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M3 5h2M7 5h2M3 12h2M7 12h2M3 19h2M7 19h2M13 5h2M17 5h2M13 12h2M17 12h2M13 19h2M17 19h2"/></svg>
                     </button>
-                    <!-- View -->
-                    <button class="action-btn" title="View" @click="viewProduct(p)">
-                      <svg fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <!-- Copy SKU -->
+                    <button class="action-btn" :class="{ copied: copiedId === p.id }" :title="copiedId === p.id ? 'Copied!' : 'Copy SKU'" @click="copySku(p)">
+                      <svg v-if="copiedId !== p.id" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path stroke-linecap="round" d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <svg v-else fill="none" stroke="currentColor" stroke-width="2.4" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20 6L9 17l-5-5"/></svg>
                     </button>
                     <!-- Edit -->
                     <button class="action-btn" title="Edit" @click="editProduct(p)">
@@ -1241,6 +1262,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   transition: background .12s, color .12s, border-color .12s;
 }
 .action-btn:hover { background: var(--surface2); color: var(--text); }
+.action-btn.copied { color: var(--green); border-color: var(--green); background: var(--green-bg); }
 .action-btn.danger:hover { background: var(--red-bg); color: var(--red); border-color: var(--red); }
 .action-btn svg { width: 14px; height: 14px; }
 
