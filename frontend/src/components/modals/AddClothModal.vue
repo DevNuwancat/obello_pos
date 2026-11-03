@@ -793,8 +793,8 @@ async function save() {
   --bg-card:     #fafaf8;
   --bg-hover:    #f0ede9;
   --bg-input:    #ffffff;
-  --border:      rgba(0,0,0,0.07);
-  --border-mid:  rgba(0,0,0,0.13);
+  --border:      rgba(0,0,0,0.16);
+  --border-mid:  rgba(0,0,0,0.26);
   --border-focus:rgba(0,0,0,0.4);
   --text:        #141412;
   --text-sub:    #7a776f;

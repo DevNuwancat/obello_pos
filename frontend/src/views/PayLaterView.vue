@@ -17,7 +17,12 @@ import { useRoute } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
-import { phoneError } from '../lib/phone'
+import { phoneError, whatsappError, whatsappLink, normalizePhone } from '../lib/phone'
+import PhoneFields from '../components/PhoneFields.vue'
+import TagPicker from '../components/TagPicker.vue'
+import TagChips from '../components/TagChips.vue'
+import TagFilter from '../components/TagFilter.vue'
+import { useCustomerTags, NO_TAG } from '../composables/useCustomerTags'
 import { markConnected, markError } from '../lib/connectionStatus'
 import { useAuthStore } from '../store/auth'
 import PayLaterCustomerBookModal from '../components/modals/PayLaterCustomerBookModal.vue'
@@ -34,6 +39,8 @@ interface CustomerBalance {
   name: string
   id_number: string | null
   phone: string | null
+  whatsapp?: string | null
+  nickname?: string | null
   address: string | null
   created_at: string
   updated_at: string
@@ -299,6 +306,9 @@ const paidAccounts    = computed(() => customers.value.filter(c => hasCredit(c) 
 type Tab = 'pending' | 'paid'
 const activeTab = ref<Tab>('pending')
 
+const { tags, loadTags, tagsOf, matchesTag, tagSearchText, setCustomerTags } = useCustomerTags()
+const tagFilter = ref<string | null>(null)
+
 const searchQuery = ref('')
 type SortMode = 'latest' | 'az'
 const sortMode = ref<SortMode>('latest')
@@ -320,8 +330,17 @@ const filteredCustomers = computed(() => {
     return hasCredit(c) && c.total_owed <= 0
   })
 
-  const q = searchQuery.value.toLowerCase()
-  if (q) list = list.filter(c => c.name.toLowerCase().includes(q))
+  // Tag filter: only the customers that carry the chosen tag
+  list = list.filter(c => matchesTag(c.id, tagFilter.value))
+
+  // Search finds the name, nickname, phone and tag names
+  const q = searchQuery.value.trim().toLowerCase()
+  if (q) list = list.filter(c =>
+    c.name.toLowerCase().includes(q) ||
+    (c.nickname ?? '').toLowerCase().includes(q) ||
+    (c.phone ?? '').toLowerCase().includes(q) ||
+    tagSearchText(c.id).includes(q)
+  )
 
   if (sortMode.value === 'az') {
     list = [...list].sort((a, b) => a.name.localeCompare(b.name))
@@ -336,6 +355,34 @@ const filteredCustomers = computed(() => {
     })
   }
   return list
+})
+
+
+// ── Tag pills: how many customers each tag has, and how much each tag still OWES ──
+// (this is how you track the outstanding debt of each organization)
+const creditCustomers = computed(() => customers.value.filter(hasCredit))
+
+const tagOptions = computed(() =>
+  tags.value.map(t => {
+    const people = creditCustomers.value.filter(c => matchesTag(c.id, t.id))
+    const owed = people.reduce((s, c) => s + Math.max(0, Number(c.total_owed)), 0)
+    return { id: t.id, name: t.name, color: t.color, count: people.length, sub: owed > 0 ? fmtRs(owed) : 'Nothing owed' }
+  })
+)
+const untaggedCount = computed(() => creditCustomers.value.filter(c => matchesTag(c.id, NO_TAG)).length)
+
+// Totals for the chosen tag (shown in the banner under the pills)
+const tagSummary = computed(() => {
+  if (!tagFilter.value) return null
+  const people = creditCustomers.value.filter(c => matchesTag(c.id, tagFilter.value))
+  return {
+    name: tagFilter.value === NO_TAG ? 'No tag' : (tags.value.find(t => t.id === tagFilter.value)?.name ?? ''),
+    customers: people.length,
+    pending: people.filter(c => c.total_owed > 0).length,
+    credit: people.reduce((s, c) => s + Number(c.total_billed) + Number(c.total_loaned), 0),
+    paid: people.reduce((s, c) => s + Number(c.total_paid), 0),
+    owed: people.reduce((s, c) => s + Math.max(0, Number(c.total_owed)), 0),
+  }
 })
 
 
@@ -526,33 +573,57 @@ const showAddModal = ref(false)
 const newName       = ref('')
 const newIdNum       = ref('')
 const newPhone       = ref('')
+const newWhatsapp    = ref('')
+const newNickname    = ref('')
+const newTagIds      = ref<string[]>([])
+const newFormKey     = ref(0)
 const newAddress     = ref('')
 const newShowErr      = ref(false)
 const newSaving       = ref(false)
 const newError        = ref('')
 
+// Is the typed mobile number already saved for another customer?
+const newDuplicate = computed(() => {
+  const key = normalizePhone(newPhone.value)
+  return key ? (customers.value.find(c => normalizePhone(c.phone) === key) ?? null) : null
+})
+
+// "Use <name>": close the form and show that customer's row
+function showExistingCustomer(id: string) {
+  const c = customers.value.find(x => x.id === id)
+  showAddModal.value = false
+  if (!c) return
+  activeTab.value = c.total_owed > 0 ? 'pending' : 'paid'
+  searchQuery.value = c.name
+  expandedIds.value = new Set([id])
+}
+
 function openAddModal() {
-  newName.value = ''; newIdNum.value = ''; newPhone.value = ''; newAddress.value = ''
+  newName.value = ''; newIdNum.value = ''; newPhone.value = ''; newWhatsapp.value = ''; newNickname.value = ''; newTagIds.value = []; newFormKey.value++; newAddress.value = ''
   newShowErr.value = false; newError.value = ''
   showAddModal.value = true
 }
 
 async function submitNewCustomer() {
   // Name and a valid mobile number are both required
-  if (!newName.value.trim() || phoneError(newPhone.value)) { newShowErr.value = true; return }
+  if (newDuplicate.value) return   // the warning under the mobile field explains why
+  if (!newName.value.trim() || phoneError(newPhone.value) || whatsappError(newWhatsapp.value)) { newShowErr.value = true; return }
   newSaving.value = true
   newError.value  = ''
 
-  const { error } = await supabase.from('pay_later_customers').insert({
+  const { data: created, error } = await supabase.from('pay_later_customers').insert({
     name:      newName.value.trim(),
+    nickname:  newNickname.value.trim() || null,
     id_number: newIdNum.value || null,
     phone:     newPhone.value.trim(),
+    whatsapp:  newWhatsapp.value.trim() || null,
     address:   newAddress.value || null,
-  })
+  }).select('id').single()
 
   newSaving.value = false
 
-  if (error) { newError.value = error.message; return }
+  if (error || !created) { newError.value = error?.message ?? 'Could not save'; return }
+  if (newTagIds.value.length) await setCustomerTags(created.id, newTagIds.value)
 
   showAddModal.value = false
   await fetchAll()
@@ -604,9 +675,11 @@ function fmtDate(d: string | null): string {
 // 12. EXPORT CSV
 // ──────────────────────────────────────────────
 function exportCSV() {
-  const headers = ['Name', 'Phone', 'ID Number', 'Total Billed', 'Total Loaned', 'Total Paid', 'Total Owed', 'Last Bill', 'Last Payment', 'Status']
+  const headers = ['Name', 'Nickname', 'Tags', 'Phone', 'ID Number', 'Total Billed', 'Total Loaned', 'Total Paid', 'Total Owed', 'Last Bill', 'Last Payment', 'Status']
   const rows = filteredCustomers.value.map(c => [
     c.name,
+    c.nickname || '',
+    tagsOf(c.id).map(t => t.name).join(' / '),
     c.phone || '—',
     c.id_number || '—',
     c.total_billed.toFixed(2),
@@ -691,16 +764,67 @@ function exportPDF() {
   })
   y = (doc as any).lastAutoTable.finalY + 26
 
+  // ── OUTSTANDING BY TAG (location / organization): how much each group still has to pay ──
+  // Uses every customer with credit (not only the open tab), and the tag filter if one is chosen.
+  const tagRows: { name: string; customers: number; pending: number; credit: number; paid: number; owed: number }[] = []
+  const rowFor = (name: string, people: CustomerBalance[]) => ({
+    name,
+    customers: people.length,
+    pending: people.filter(c => c.total_owed > 0).length,
+    credit: people.reduce((sum, c) => sum + Number(c.total_billed) + Number(c.total_loaned), 0),
+    paid: people.reduce((sum, c) => sum + Number(c.total_paid), 0),
+    owed: people.reduce((sum, c) => sum + Math.max(0, Number(c.total_owed)), 0),
+  })
+  const scope = creditCustomers.value.filter(c => matchesTag(c.id, tagFilter.value))
+  if (tags.value.length > 0 && scope.length > 0) {
+    for (const t of tags.value) {
+      if (tagFilter.value && tagFilter.value !== t.id) continue
+      const people = scope.filter(c => matchesTag(c.id, t.id))
+      if (people.length) tagRows.push(rowFor(t.name, people))
+    }
+    const untagged = scope.filter(c => matchesTag(c.id, NO_TAG))
+    if (untagged.length && (!tagFilter.value || tagFilter.value === NO_TAG)) tagRows.push(rowFor('No tag', untagged))
+    tagRows.sort((a, b) => b.owed - a.owed)
+
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(12)
+    doc.setTextColor(20, 20, 18)
+    doc.text('Outstanding by tag', margin, y)
+    const all = rowFor('', scope)
+    autoTable(doc, {
+      startY: y + 10,
+      margin: { left: margin, right: margin },
+      theme: 'grid',
+      styles: pdfGridStyles,
+      headStyles: pdfGridHead,
+      head: [['Tag', 'Customers', 'Still owe', 'Credit (Rs.)', 'Paid (Rs.)', 'Outstanding (Rs.)']],
+      body: tagRows.map(r => [r.name, String(r.customers), String(r.pending), fmtNum(r.credit), fmtNum(r.paid), fmtNum(r.owed)]),
+      foot: [['Total (each customer once)', String(all.customers), String(all.pending), fmtNum(all.credit), fmtNum(all.paid), fmtNum(all.owed)]],
+      footStyles: { fillColor: [247, 245, 242], textColor: [20, 20, 18], fontStyle: 'bold' },
+      columnStyles: { 1: { halign: 'center' }, 2: { halign: 'center' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right', fontStyle: 'bold' } },
+    })
+    y = (doc as any).lastAutoTable.finalY + 6
+    // A customer with several tags is listed under each of them, so the rows can add up to more than the total
+    if (scope.some(c => (tagsOf(c.id).length) > 1)) {
+      doc.setFont('helvetica', 'italic'); doc.setFontSize(8.5); doc.setTextColor(120, 120, 115)
+      doc.text('A customer with more than one tag is counted under each of their tags.', margin, y + 8)
+      y += 12
+    }
+    y += 20
+  }
+
   // ── CUSTOMER ACCOUNTS TABLE (respects the current tab + search + sort) ──
+  if (y > doc.internal.pageSize.getHeight() - 120) { doc.addPage(); y = 50 }
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(12)
   doc.setTextColor(20, 20, 18)
-  doc.text(activeTab.value === 'pending' ? 'Pending Accounts' : 'Paid Accounts', margin, y)
+  const tagNote = tagFilter.value ? ` - ${tagFilter.value === NO_TAG ? 'No tag' : (tags.value.find(t => t.id === tagFilter.value)?.name ?? '')}` : ''
+  doc.text((activeTab.value === 'pending' ? 'Pending Accounts' : 'Paid Accounts') + tagNote, margin, y)
   y += 10
 
   const custHead = [['Customer', 'Phone', 'Credit (bills + loans)', 'Total Paid', 'Balance', 'Last Activity']]
   const custBody = filteredCustomers.value.map(c => [
-    c.name,
+    [c.nickname ? `${c.name} (${c.nickname})` : c.name, tagsOf(c.id).map(t => t.name).join(', ')].filter(Boolean).join('\n'),
     c.phone || '—',
     fmtNum(Number(c.total_billed) + Number(c.total_loaned)),
     fmtNum(c.total_paid),
@@ -787,6 +911,7 @@ function showToastMsg(msg: string) {
 const route = useRoute()
 
 onMounted(async () => {
+  loadTags()
   await fetchAll()
 
   // Arrived from Today Business ("View in Pay Later"): open the right tab,
@@ -862,7 +987,7 @@ onMounted(async () => {
       <div class="toolbar">
         <div class="search-box">
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
-          <input v-model="searchQuery" type="text" placeholder="Search by name…" />
+          <input v-model="searchQuery" type="text" placeholder="Search name, nickname, phone or tag…" />
         </div>
 
         <div class="sort-chips">
@@ -891,6 +1016,18 @@ onMounted(async () => {
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
             New Customer
           </button>
+        </div>
+      </div>
+
+      <!-- ── TAG FILTER (location / organization) + debt summary for the chosen tag ── -->
+      <div v-if="tags.length" class="tag-bar">
+        <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="creditCustomers.length" :noTagCount="untaggedCount" />
+        <div v-if="tagSummary" class="tag-summary">
+          <strong>{{ tagSummary.name }}</strong>
+          <span>{{ tagSummary.customers }} customer{{ tagSummary.customers === 1 ? '' : 's' }} · {{ tagSummary.pending }} still owe</span>
+          <span>Credit <b>{{ fmtRs(tagSummary.credit) }}</b></span>
+          <span>Paid <b class="ts-paid">{{ fmtRs(tagSummary.paid) }}</b></span>
+          <span>Outstanding <b class="ts-owed">{{ fmtRs(tagSummary.owed) }}</b></span>
         </div>
       </div>
 
@@ -939,6 +1076,8 @@ onMounted(async () => {
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.38 3.46 16 2a4 4 0 0 1-8 0L3.62 3.46a2 2 0 0 0-1.34 2.23l.58 3.47a1 1 0 0 0 .99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 0 0 2-2V10h2.15a1 1 0 0 0 .99-.84l.58-3.47a2 2 0 0 0-1.34-2.23z"/></svg>
                       </span>
                     </span>
+                    <div v-if="c.nickname" class="nick">“{{ c.nickname }}”</div>
+                    <div v-if="tagsOf(c.id).length" class="name-tags"><TagChips :tags="tagsOf(c.id)" /></div>
                     <div class="cust-id">{{ c.id_number || '' }}</div>
                   </td>
                   <td class="date-cell">{{ c.phone || '—' }}</td>
@@ -978,6 +1117,13 @@ onMounted(async () => {
                         <div class="expand-section-title">Contact</div>
                         <div class="contact-grid">
                           <div><span class="contact-label">Phone</span> {{ c.phone || '—' }}</div>
+                          <div v-if="c.nickname"><span class="contact-label">Nickname</span> {{ c.nickname }}</div>
+                          <div v-if="tagsOf(c.id).length"><span class="contact-label">Tags</span> <TagChips :tags="tagsOf(c.id)" :max="10" /></div>
+                          <div>
+                            <span class="contact-label">WhatsApp</span>
+                            <a v-if="c.whatsapp" :href="whatsappLink(c.whatsapp)" target="_blank" rel="noopener" class="wa-link" @click.stop>{{ c.whatsapp }}{{ c.whatsapp === c.phone ? ' (same)' : '' }}</a>
+                            <template v-else>—</template>
+                          </div>
                           <div><span class="contact-label">ID Number</span> {{ c.id_number || '—' }}</div>
                           <div><span class="contact-label">Address</span> {{ c.address || '—' }}</div>
                         </div>
@@ -1199,14 +1345,23 @@ onMounted(async () => {
               <span v-if="newShowErr && !newName.trim()" class="form-error">Name is required</span>
             </div>
             <div class="form-field">
+              <label class="form-label">Nickname</label>
+              <input v-model="newNickname" class="form-input" placeholder="Optional — what people call them" autocomplete="off" />
+            </div>
+            <div class="form-field">
               <label class="form-label">ID Number</label>
               <input v-model="newIdNum" class="form-input" placeholder="National ID / Passport" />
             </div>
-            <div class="form-field">
-              <label class="form-label">Mobile Number <span class="req">*</span></label>
-              <input v-model="newPhone" class="form-input" :class="{ error: newShowErr && phoneError(newPhone) }" type="tel" placeholder="e.g. 077 123 4567" />
-              <span v-if="newShowErr && phoneError(newPhone)" class="form-error">{{ phoneError(newPhone) }}</span>
-            </div>
+            <PhoneFields
+              :key="newFormKey"
+              v-model:mobile="newPhone"
+              v-model:whatsapp="newWhatsapp"
+              :showErrors="newShowErr"
+              :startSame="true"
+              :duplicate="newDuplicate"
+              @useExisting="showExistingCustomer"
+            />
+            <TagPicker v-model="newTagIds" />
             <div class="form-field">
               <label class="form-label">Address</label>
               <textarea v-model="newAddress" class="form-input textarea" rows="3" placeholder="Street, City…" />
@@ -1268,7 +1423,7 @@ onMounted(async () => {
   --bg:        #F7F5F2;
   --surface:   #ffffff;
   --surface2:  #f7f5f2;
-  --border:    rgba(0,0,0,0.08);
+  --border:    rgba(0,0,0,0.16);
   --text:      #1a1a1a;
   --text-sub:  #6b6660;
   --text-muted:#B0ADA5;
@@ -1408,6 +1563,19 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .expand-empty { font-size: 12px; color: var(--text-muted); padding: 2px 0; }
 
 .contact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12.5px; color: var(--text); }
+.nick { font-size: 11.5px; color: var(--text-sub); font-style: italic; margin-top: 1px; }
+.name-tags { margin-top: 4px; }
+.tag-bar { margin: 14px 32px 0; display: flex; flex-direction: column; gap: 10px; }
+.tag-summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; padding: 10px 16px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-sub);
+}
+.tag-summary strong { color: var(--text); font-size: 13.5px; }
+.tag-summary b { color: var(--text); font-family: 'DM Mono', monospace; }
+.tag-summary .ts-paid { color: var(--green); }
+.tag-summary .ts-owed { color: var(--red); }
+.wa-link { color: #25D366; text-decoration: none; font-weight: 500; }
+.wa-link:hover { text-decoration: underline; }
 .contact-label { color: var(--text-muted); font-size: 10.5px; display: block; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
 
 .name-line { display: inline-flex; align-items: center; gap: 6px; }
@@ -1521,7 +1689,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
   --bg-card:     #fafaf8;
   --bg-hover:    #f0ede9;
   --bg-input:    #ffffff;
-  --border-mid:  rgba(0,0,0,0.13);
+  --border-mid:  rgba(0,0,0,0.26);
   --border-focus:rgba(0,0,0,0.4);
   --accent-bg:   #141412;
   --accent-text: #f7f5f2;

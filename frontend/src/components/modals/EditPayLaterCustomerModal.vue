@@ -7,13 +7,16 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
-import { phoneError } from '../../lib/phone'
+import { phoneError, whatsappError } from '../../lib/phone'
+import PhoneFields from '../PhoneFields.vue'
+import TagPicker from '../TagPicker.vue'
+import { useCustomerTags } from '../../composables/useCustomerTags'
 import Toast from '../Toast.vue'
 
 const props = defineProps<{
   modelValue: boolean
   isLight: boolean
-  customer: { id: string; name: string; id_number: string | null; phone: string | null; address: string | null } | null
+  customer: { id: string; name: string; id_number: string | null; phone: string | null; whatsapp?: string | null; nickname?: string | null; address: string | null } | null
 }>()
 const emit = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
@@ -24,6 +27,11 @@ const emit = defineEmits<{
 const name     = ref('')
 const idNumber = ref('')
 const phone    = ref('')
+const whatsapp = ref('')
+const nickname = ref('')
+const tagIds   = ref<string[]>([])
+const { loadTags, tagIdsOf, setCustomerTags } = useCustomerTags()
+loadTags()
 const address  = ref('')
 
 const showErrors = ref(false)
@@ -37,6 +45,9 @@ watch(() => props.modelValue, (isOpen) => {
     name.value     = props.customer.name
     idNumber.value = props.customer.id_number ?? ''
     phone.value    = props.customer.phone ?? ''
+    whatsapp.value = props.customer.whatsapp ?? ''
+    nickname.value = props.customer.nickname ?? ''
+    tagIds.value   = tagIdsOf(props.customer.id)
     address.value  = props.customer.address ?? ''
     showErrors.value = false
     saveError.value  = ''
@@ -50,7 +61,7 @@ function close() {
 async function save() {
   if (!props.customer) return
   // Name and a valid mobile number are both required (so a number can't be blanked later)
-  if (!name.value.trim() || phoneError(phone.value)) { showErrors.value = true; return }
+  if (!name.value.trim() || phoneError(phone.value) || whatsappError(whatsapp.value)) { showErrors.value = true; return }
 
   saving.value    = true
   saveError.value = ''
@@ -61,6 +72,8 @@ async function save() {
       name:      name.value.trim(),
       id_number: idNumber.value.trim() || null,
       phone:     phone.value.trim(),
+      whatsapp:  whatsapp.value.trim() || null,
+      nickname:  nickname.value.trim() || null,
       address:   address.value.trim() || null,
     })
     .eq('id', props.customer.id)
@@ -68,6 +81,10 @@ async function save() {
   saving.value = false
 
   if (error) { saveError.value = error.message; return }
+
+  // Tags are saved separately (they live in their own table)
+  const tagError = await setCustomerTags(props.customer.id, tagIds.value)
+  if (tagError) { saveError.value = 'Saved, but the tags failed: ' + tagError; return }
 
   showToast.value = true
   emit('saved')
@@ -97,14 +114,15 @@ async function save() {
             <span v-if="showErrors && !name.trim()" class="form-error">Name is required</span>
           </div>
           <div class="form-field">
+            <label class="form-label">Nickname</label>
+            <input v-model="nickname" class="form-input" placeholder="Optional — what people call them" autocomplete="off" />
+          </div>
+          <div class="form-field">
             <label class="form-label">ID Number</label>
             <input v-model="idNumber" class="form-input" placeholder="National ID / Passport" />
           </div>
-          <div class="form-field">
-            <label class="form-label">Mobile Number *</label>
-            <input v-model="phone" class="form-input" :class="{ error: showErrors && phoneError(phone) }" type="tel" placeholder="e.g. 077 123 4567" />
-            <span v-if="showErrors && phoneError(phone)" class="form-error">{{ phoneError(phone) }}</span>
-          </div>
+          <PhoneFields v-model:mobile="phone" v-model:whatsapp="whatsapp" :showErrors="showErrors" />
+          <TagPicker v-model="tagIds" />
           <div class="form-field">
             <label class="form-label">Address</label>
             <textarea v-model="address" class="form-input textarea" rows="3" placeholder="Street, City…" />
@@ -148,8 +166,8 @@ async function save() {
   --bg-panel:    #FFFFFF;
   --bg-card:     #FAFAF8;
   --bg-hover:    #F0EDE9;
-  --border:      rgba(0,0,0,0.07);
-  --border-mid:  rgba(0,0,0,0.12);
+  --border:      rgba(0,0,0,0.16);
+  --border-mid:  rgba(0,0,0,0.26);
   --text:        #141412;
   --text-sub:    #7A776F;
   --text-muted:  #B0ADA5;

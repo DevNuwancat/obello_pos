@@ -89,7 +89,7 @@ watch(() => props.modelValue, (isOpen) => {
 .confirm-overlay.light {
   --bg-panel:   #FFFFFF;
   --bg-card:    #FAFAF8;
-  --border:     rgba(0,0,0,0.08);
+  --border:     rgba(0,0,0,0.16);
   --text:       #141412;
   --text-sub:   #7A776F;
   --accent-bg:  #141412;

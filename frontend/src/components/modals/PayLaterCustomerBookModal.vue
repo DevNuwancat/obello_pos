@@ -5,11 +5,14 @@
   ever added but never bought anything on credit yet. Search, edit, delete.
 -->
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 import EditPayLaterCustomerModal from './EditPayLaterCustomerModal.vue'
+import TagChips from '../TagChips.vue'
+import TagFilter from '../TagFilter.vue'
+import { useCustomerTags, TAG_COLORS, NO_TAG } from '../../composables/useCustomerTags'
 
 const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{
@@ -23,6 +26,8 @@ interface Contact {
   name: string
   id_number: string | null
   phone: string | null
+  whatsapp: string | null
+  nickname: string | null
   address: string | null
   total_billed: number
   total_owed: number
@@ -44,7 +49,7 @@ async function fetchContacts() {
   try {
     const { data, error } = await supabase
       .from('pay_later_balances')
-      .select('id, name, id_number, phone, address, total_billed, total_owed, total_loaned')
+      .select('id, name, id_number, phone, whatsapp, nickname, address, total_billed, total_owed, total_loaned')
       .order('name')
     if (error) { fetchError.value = error.message; markError(); return }
     contacts.value = data ?? []
@@ -57,16 +62,61 @@ async function fetchContacts() {
   }
 }
 
-watch(() => props.modelValue, (isOpen) => { if (isOpen) fetchContacts() })
+// ── TAGS ──
+const { tags, tagCounts, loadTags, tagsOf, matchesTag, tagSearchText, createTag, updateTag, deleteTag } = useCustomerTags()
+const tagFilter = ref<string | null>(null)
+const tagOptions = computed(() =>
+  tags.value.map(t => ({ id: t.id, name: t.name, color: t.color, count: tagCounts.value.get(t.id) ?? 0 }))
+)
+const untaggedCount = computed(() => contacts.value.filter(c => matchesTag(c.id, NO_TAG)).length)
+
+watch(() => props.modelValue, (isOpen) => { if (isOpen) { fetchContacts(); loadTags(true) } })
+
+// ── MANAGE TAGS panel (create / rename / delete the tags themselves) ──
+const showManage  = ref(false)
+const newTagName  = ref('')
+const newTagColor = ref(TAG_COLORS[0])
+const tagMsg      = ref('')
+
+async function addTag() {
+  tagMsg.value = ''
+  const res = await createTag(newTagName.value, newTagColor.value)
+  if (res.error) { tagMsg.value = res.error; return }
+  newTagName.value = ''
+  // the next new tag gets the next colour, so tags look different by default
+  newTagColor.value = TAG_COLORS[(tags.value.length) % TAG_COLORS.length]
+}
+
+async function renameTag(id: string, current: string, color: string) {
+  const name = window.prompt('Rename tag', current)
+  if (name === null || name.trim() === current) return
+  tagMsg.value = await updateTag(id, name, color)
+}
+
+async function recolorTag(id: string, name: string, color: string) {
+  tagMsg.value = await updateTag(id, name, color)
+}
+
+async function removeTag(id: string, name: string) {
+  const n = tagCounts.value.get(id) ?? 0
+  if (!confirm(`Delete the tag "${name}"?${n ? ` It will be taken off ${n} customer${n === 1 ? '' : 's'}.` : ''}`)) return
+  const err = await deleteTag(id)
+  if (err) { tagMsg.value = err; return }
+  if (tagFilter.value === id) tagFilter.value = null
+  emit('changed')
+}
 
 // ── SEARCH ──
 function displayList(): Contact[] {
   const q = searchQuery.value.toLowerCase().trim()
-  if (!q) return contacts.value
-  return contacts.value.filter(c =>
+  const byTag = contacts.value.filter(c => matchesTag(c.id, tagFilter.value))
+  if (!q) return byTag
+  return byTag.filter(c =>
     c.name.toLowerCase().includes(q) ||
+    (c.nickname ?? '').toLowerCase().includes(q) ||
     (c.phone ?? '').toLowerCase().includes(q) ||
-    (c.id_number ?? '').toLowerCase().includes(q)
+    (c.id_number ?? '').toLowerCase().includes(q) ||
+    tagSearchText(c.id).includes(q)
   )
 }
 
@@ -157,8 +207,43 @@ function close() {
             <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <input v-model="searchQuery" class="search-input" placeholder="Search by name, phone or ID number…" />
+            <input v-model="searchQuery" class="search-input" placeholder="Search name, nickname, phone, ID or tag…" />
           </div>
+          <button class="manage-btn" :class="{ active: showManage }" @click="showManage = !showManage" title="Create, rename or delete tags">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            Tags
+          </button>
+        </div>
+
+        <!-- TAG MANAGER: make the tags once, then give them to customers with the Edit button -->
+        <Transition name="slide">
+          <div v-if="showManage" class="tag-manager">
+            <div class="tm-title">Tags <span>location / organization — e.g. Provincial Council, Pradeshiya Sabha</span></div>
+            <div v-if="tags.length === 0" class="tm-empty">No tags yet. Create the first one below.</div>
+            <div v-for="t in tags" :key="t.id" class="tm-row">
+              <span class="tm-dot" :style="{ background: t.color }"></span>
+              <span class="tm-name">{{ t.name }}</span>
+              <span class="tm-count">{{ tagCounts.get(t.id) ?? 0 }} customer{{ (tagCounts.get(t.id) ?? 0) === 1 ? '' : 's' }}</span>
+              <span class="tm-colors">
+                <button v-for="c in TAG_COLORS" :key="c" class="tm-color" :class="{ on: t.color === c }" :style="{ background: c }" @click="recolorTag(t.id, t.name, c)"></button>
+              </span>
+              <button class="tm-act" @click="renameTag(t.id, t.name, t.color)">Rename</button>
+              <button class="tm-act tm-del" @click="removeTag(t.id, t.name)">Delete</button>
+            </div>
+            <div class="tm-new">
+              <input v-model="newTagName" class="tm-input" placeholder="New tag name…" @keydown.enter="addTag" />
+              <span class="tm-colors">
+                <button v-for="c in TAG_COLORS" :key="c" class="tm-color" :class="{ on: newTagColor === c }" :style="{ background: c }" @click="newTagColor = c"></button>
+              </span>
+              <button class="tm-add" @click="addTag">+ Add tag</button>
+            </div>
+            <div v-if="tagMsg" class="tm-msg">{{ tagMsg }}</div>
+          </div>
+        </Transition>
+
+        <!-- TAG FILTER -->
+        <div v-if="tags.length" class="tag-filter-row">
+          <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="contacts.length" :noTagCount="untaggedCount" />
         </div>
 
         <!-- BODY -->
@@ -174,9 +259,11 @@ function close() {
               <div class="cust-avatar">{{ c.name.charAt(0).toUpperCase() }}</div>
 
               <div class="cust-info">
-                <div class="cust-name">{{ c.name }}</div>
+                <div class="cust-name">{{ c.name }}<span v-if="c.nickname" class="cust-nick"> “{{ c.nickname }}”</span></div>
+                <div v-if="tagsOf(c.id).length" class="cust-tags"><TagChips :tags="tagsOf(c.id)" :max="4" /></div>
                 <div class="cust-meta">
                   <span v-if="c.phone">{{ c.phone }}</span>
+                  <span v-if="c.whatsapp" class="wa-chip" :title="'WhatsApp: ' + c.whatsapp">WhatsApp{{ c.whatsapp === c.phone ? '' : ' ' + c.whatsapp }}</span>
                   <span v-if="c.phone && c.id_number"> · </span>
                   <span v-if="c.id_number">ID {{ c.id_number }}</span>
                 </div>
@@ -244,8 +331,8 @@ function close() {
   --bg-panel:   #FFFFFF;
   --bg-card:    #FAFAF8;
   --bg-hover:   #F0EDE9;
-  --border:     rgba(0,0,0,0.07);
-  --border-mid: rgba(0,0,0,0.12);
+  --border:     rgba(0,0,0,0.16);
+  --border-mid: rgba(0,0,0,0.26);
   --text:       #141412;
   --text-sub:   #7A776F;
   --text-muted: #B0ADA5;
@@ -304,4 +391,34 @@ function close() {
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+.wa-chip { margin-left: 6px; padding: 0 7px; border-radius: 999px; background: rgba(37,211,102,.14); color: #25D366; font-size: 10px; font-weight: 600; }
+.cust-nick { font-weight: 400; font-style: italic; color: var(--text-sub); font-size: 12px; }
+.cust-tags { margin: 3px 0 2px; }
+.tag-filter-row { padding: 12px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; max-height: 120px; overflow-y: auto; }
+.manage-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--border-mid); background: var(--bg-card); color: var(--text-sub);
+  font-size: 12.5px; font-family: 'DM Sans', sans-serif; transition: background .15s, color .15s;
+}
+.manage-btn:hover, .manage-btn.active { background: var(--accent-bg); color: var(--accent-text); border-color: var(--accent-bg); }
+.tag-manager { padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--bg-card); display: flex; flex-direction: column; gap: 9px; flex-shrink: 0; max-height: 260px; overflow-y: auto; }
+.tm-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.tm-title span { font-weight: 400; color: var(--text-muted); font-size: 11.5px; margin-left: 6px; }
+.tm-empty { font-size: 12.5px; color: var(--text-muted); }
+.tm-row, .tm-new { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tm-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.tm-name { font-size: 13px; font-weight: 500; color: var(--text); }
+.tm-count { font-size: 11.5px; color: var(--text-muted); }
+.tm-colors { display: inline-flex; gap: 5px; margin-left: auto; }
+.tm-new .tm-colors { margin-left: 0; }
+.tm-color { width: 15px; height: 15px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.tm-color.on { border-color: var(--text); }
+.tm-act { padding: 3px 10px; border-radius: 7px; border: 1px solid var(--border-mid); background: transparent; color: var(--text-sub); font-size: 11.5px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.tm-act:hover { color: var(--text); background: var(--bg-hover); }
+.tm-del:hover { color: var(--red); border-color: var(--red); background: var(--red-bg); }
+.tm-input { flex: 1; min-width: 140px; padding: 7px 11px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-panel); color: var(--text); font-size: 13px; font-family: 'DM Sans', sans-serif; outline: none; }
+.tm-add { padding: 7px 14px; border-radius: 8px; border: none; background: var(--accent-bg); color: var(--accent-text); font-size: 12px; font-weight: 600; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+.tm-msg { font-size: 12px; color: var(--red); }
+.slide-enter-active, .slide-leave-active { transition: opacity .18s ease, max-height .22s ease; overflow: hidden; }
+.slide-enter-from, .slide-leave-to { opacity: 0; max-height: 0; }
 </style>

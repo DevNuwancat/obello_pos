@@ -198,7 +198,7 @@ onMounted(fetchUsers)
   --bg:        #F7F5F2;
   --surface:   #ffffff;
   --surface2:  #f7f5f2;
-  --border:    rgba(0,0,0,0.08);
+  --border:    rgba(0,0,0,0.16);
   --text:      #1a1a1a;
   --text-sub:  #6b6660;
   --text-muted:#B0ADA5;

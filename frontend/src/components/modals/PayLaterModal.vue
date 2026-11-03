@@ -11,7 +11,12 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
-import { phoneError } from '../../lib/phone'
+import { phoneError, whatsappError, normalizePhone } from '../../lib/phone'
+import PhoneFields from '../PhoneFields.vue'
+import TagPicker from '../TagPicker.vue'
+import TagChips from '../TagChips.vue'
+import TagFilter from '../TagFilter.vue'
+import { useCustomerTags, NO_TAG } from '../../composables/useCustomerTags'
 
 // ── PROPS ──
 const props = defineProps<{
@@ -43,6 +48,7 @@ interface CustomerBalance {
   name: string
   id_number: string | null
   phone: string | null
+  nickname?: string | null
   address: string | null
   total_owed: number
   last_bill_at: string | null
@@ -71,16 +77,29 @@ async function fetchCustomers() {
   listLoading.value = false
 }
 
+// ── TAGS (location / organization) ──
+const { tags, loadTags, tagsOf, matchesTag, tagSearchText, setCustomerTags } = useCustomerTags()
+loadTags()
+const tagFilter = ref<string | null>(null)
+const tagOptions = computed(() =>
+  tags.value.map(t => ({ id: t.id, name: t.name, color: t.color, count: customers.value.filter(c => matchesTag(c.id, t.id)).length }))
+)
+const untaggedCount = computed(() => customers.value.filter(c => matchesTag(c.id, NO_TAG)).length)
+
 // ── SEARCH + SORT ──
 const searchQuery = ref('')
 type SortMode = 'latest' | 'az'
 const sortMode = ref<SortMode>('latest')
 
 const filteredCustomers = computed(() => {
-  const q = searchQuery.value.toLowerCase()
-  let list = q
-    ? customers.value.filter(c => c.name.toLowerCase().includes(q))
-    : [...customers.value]
+  const q = searchQuery.value.trim().toLowerCase()
+  let list = customers.value.filter(c => matchesTag(c.id, tagFilter.value))
+  if (q) list = list.filter(c =>
+    c.name.toLowerCase().includes(q) ||
+    (c.nickname ?? '').toLowerCase().includes(q) ||
+    (c.phone ?? '').toLowerCase().includes(q) ||
+    tagSearchText(c.id).includes(q)
+  )
 
   if (sortMode.value === 'az') {
     list.sort((a, b) => a.name.localeCompare(b.name))
@@ -110,15 +129,35 @@ const printBill = ref(false)
 const regName    = ref('')
 const regIdNum   = ref('')
 const regPhone   = ref('')
+const regWhatsapp = ref('')
+const regNickname = ref('')
+const regTagIds   = ref<string[]>([])
+const regFormKey = ref(0)   // bumped on reset so the phone fields start fresh
 const regAddress = ref('')
 const regError   = ref('')
 const regSaving  = ref(false)
 const regShowErr = ref(false)
 
+// Is the typed mobile number already saved for another customer? (Block it, offer to use that one)
+const regDuplicate = computed(() => {
+  const key = normalizePhone(regPhone.value)
+  return key ? (customers.value.find(c => normalizePhone(c.phone) === key) ?? null) : null
+})
+
+function useExistingCustomer(id: string) {
+  selectedId.value = id
+  resetRegForm()
+  goSearch()
+}
+
 function resetRegForm() {
   regName.value    = ''
   regIdNum.value   = ''
   regPhone.value   = ''
+  regWhatsapp.value = ''
+  regNickname.value = ''
+  regTagIds.value   = []
+  regFormKey.value++
   regAddress.value = ''
   regError.value   = ''
   regShowErr.value = false
@@ -126,15 +165,18 @@ function resetRegForm() {
 
 async function addAndSelect() {
   // Name and a valid mobile number are both required
-  if (!regName.value.trim() || phoneError(regPhone.value)) { regShowErr.value = true; return }
+  if (regDuplicate.value) return   // the warning under the mobile field explains why
+  if (!regName.value.trim() || phoneError(regPhone.value) || whatsappError(regWhatsapp.value)) { regShowErr.value = true; return }
   regSaving.value = true
   regError.value  = ''
   const { data, error } = await supabase
     .from('pay_later_customers')
     .insert({
       name:       regName.value.trim(),
+      nickname:   regNickname.value.trim() || null,
       id_number:  regIdNum.value || null,
       phone:      regPhone.value.trim(),
+      whatsapp:   regWhatsapp.value.trim() || null,
       address:    regAddress.value || null,
     })
     .select()
@@ -142,6 +184,7 @@ async function addAndSelect() {
   regSaving.value = false
 
   if (error) { regError.value = error.message; return }
+  if (regTagIds.value.length) await setCustomerTags(data.id, regTagIds.value)
 
   // Reload list, auto-select new customer, go back to search
   await fetchCustomers()
@@ -238,7 +281,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
               <input
                 v-model="searchQuery"
                 class="form-input search-input"
-                placeholder="Search by name…"
+                placeholder="Search name, nickname, phone or tag…"
                 autocomplete="off"
               />
             </div>
@@ -251,6 +294,9 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
                 @click="sortMode = s.key"
               >{{ s.label }}</button>
             </div>
+          </div>
+          <div v-if="tags.length" class="modal-tag-filter">
+            <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="customers.length" :noTagCount="untaggedCount" />
           </div>
 
           <!-- CUSTOMER LIST -->
@@ -272,7 +318,8 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
               <div class="cust-avatar">{{ c.name.charAt(0).toUpperCase() }}</div>
 
               <div class="cust-info">
-                <div class="cust-name">{{ c.name }}</div>
+                <div class="cust-name">{{ c.name }}<span v-if="c.nickname" class="cust-nick"> “{{ c.nickname }}”</span></div>
+                <div v-if="tagsOf(c.id).length" class="cust-tags"><TagChips :tags="tagsOf(c.id)" /></div>
                 <div class="cust-meta">
                   <span v-if="c.phone">{{ c.phone }}</span>
                   <span v-if="c.phone && c.id_number"> · </span>
@@ -370,6 +417,12 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
               <span v-if="regShowErr && !regName.trim()" class="form-error">Name is required</span>
             </div>
 
+            <!-- Nickname -->
+            <div class="form-field">
+              <label class="form-label">Nickname</label>
+              <input v-model="regNickname" class="form-input" placeholder="Optional — what people call them" autocomplete="off" />
+            </div>
+
             <!-- ID Number -->
             <div class="form-field">
               <label class="form-label">ID Number</label>
@@ -381,19 +434,19 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
               />
             </div>
 
-            <!-- Phone -->
-            <div class="form-field">
-              <label class="form-label">Mobile Number <span class="req">*</span></label>
-              <input
-                v-model="regPhone"
-                class="form-input"
-                :class="{ error: regShowErr && phoneError(regPhone) }"
-                placeholder="e.g. 077 123 4567"
-                autocomplete="off"
-                type="tel"
-              />
-              <span v-if="regShowErr && phoneError(regPhone)" class="form-error">{{ phoneError(regPhone) }}</span>
-            </div>
+            <!-- Mobile + WhatsApp (with a "Same as mobile" switch) -->
+            <PhoneFields
+              :key="regFormKey"
+              v-model:mobile="regPhone"
+              v-model:whatsapp="regWhatsapp"
+              :showErrors="regShowErr"
+              :startSame="true"
+              :duplicate="regDuplicate"
+              @useExisting="useExistingCustomer"
+            />
+
+            <!-- Tags -->
+            <TagPicker v-model="regTagIds" />
 
             <!-- Address -->
             <div class="form-field">
@@ -459,8 +512,8 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
   --bg-card:     #fafaf8;
   --bg-hover:    #f0ede9;
   --bg-input:    #ffffff;
-  --border:      rgba(0,0,0,0.07);
-  --border-mid:  rgba(0,0,0,0.13);
+  --border:      rgba(0,0,0,0.16);
+  --border-mid:  rgba(0,0,0,0.26);
   --border-focus:rgba(0,0,0,0.4);
   --text:        #141412;
   --text-sub:    #7a776f;
@@ -675,4 +728,7 @@ function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 /* ── FADE ── */
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+.cust-nick { font-weight: 400; font-style: italic; color: var(--text-sub); font-size: 12px; }
+.cust-tags { margin-top: 3px; }
+.modal-tag-filter { padding: 0 24px 10px; }
 </style>

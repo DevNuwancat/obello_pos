@@ -18,6 +18,8 @@ import { supabase } from '../lib/supabase'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../store/auth'
 import { markConnected, markError } from '../lib/connectionStatus'
+import TagChips from '../components/TagChips.vue'
+import { useCustomerTags } from '../composables/useCustomerTags'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 
@@ -85,6 +87,7 @@ interface TransactionItemRow {
 // 3. THEME — same pattern as ProductListView
 // ──────────────────────────────────────────────
 const isLight = ref(localStorage.getItem('theme') === 'light')
+const { loadTags, tagsOf } = useCustomerTags()
 
 
 // ──────────────────────────────────────────────
@@ -121,7 +124,7 @@ const selectedDateLabel = computed(() => {
 const transactions = ref<Transaction[]>([])
 const itemRows      = ref<TransactionItemRow[]>([])
 // Later Pay customers for the loaded sales, by id — so a sale can show "who took it"
-interface PayLaterCustomer { id: string; name: string; phone: string | null; id_number: string | null; address: string | null }
+interface PayLaterCustomer { id: string; name: string; nickname?: string | null; phone: string | null; id_number: string | null; address: string | null }
 const customerById  = ref(new Map<string, PayLaterCustomer>())
 const loading       = ref(false)
 const fetchError    = ref('')
@@ -167,7 +170,7 @@ async function fetchReportData() {
     if (customerIds.length > 0) {
       const { data: custData, error: custError } = await supabase
         .from('pay_later_customers')
-        .select('id, name, phone, id_number, address')
+        .select('id, name, nickname, phone, id_number, address')
         .in('id', customerIds)
       if (custError) console.warn('Could not load Later Pay customers:', custError.message)
       for (const c of custData ?? []) customerMap.set(c.id, c as PayLaterCustomer)
@@ -1110,6 +1113,15 @@ async function exportMonthlyPDF() {
     const giftCount = monthGifts.reduce((s, g) => s + g.qty, 0)
     const giftCost  = monthGifts.reduce((s, g) => s + g.cost * g.qty, 0)
 
+    // 2c) items returned in the month (permanent "return_log", so it still counts after the bill is purged)
+    const monthReturns: { qty: number; amount: number }[] = await fetchAllRows((from, to) =>
+      supabase.from('return_log').select('qty, amount')
+        .gte('returned_at', start).lte('returned_at', end)
+        .order('returned_at', { ascending: true }).order('id').range(from, to)
+    )
+    const returnCount  = monthReturns.reduce((s, r) => s + Number(r.qty), 0)
+    const returnAmount = monthReturns.reduce((s, r) => s + Number(r.amount), 0)
+
     // 3) work out the numbers (same rules as the daily report)
     const costOfTxn = new Map<string, number>()
     for (const row of monthItems) {
@@ -1184,6 +1196,8 @@ async function exportMonthlyPDF() {
         ['Sales Count', String(sales.length)],
         ['Later Pay Orders', String(laterPay.length)],
         ['Later Pay Owed', fmtRs(laterPay.reduce((s, t) => s + t.total, 0))],
+        ['Returned Items', String(returnCount)],
+        ['Returned Amount', fmtRs(returnAmount)],
       ],
       styles: { ...gridStyles, fontSize: 10, cellPadding: 7 },
       columnStyles: { 0: { fontStyle: 'bold' }, 1: { halign: 'right' } },
@@ -1254,6 +1268,7 @@ function showToastMsg(msg: string) {
 // 11. INIT
 // ──────────────────────────────────────────────
 onMounted(() => {
+  loadTags()
   fetchReportData()
   fetchReturns()
   fetchLoans()
@@ -1752,7 +1767,8 @@ onMounted(() => {
                           Taken on Later Pay by
                         </div>
                         <template v-if="t.customer_id && customerById.get(t.customer_id)">
-                          <div class="taken-by-name">{{ customerById.get(t.customer_id)!.name }}</div>
+                          <div class="taken-by-name">{{ customerById.get(t.customer_id)!.name }}<span v-if="customerById.get(t.customer_id)!.nickname" class="taken-by-nick"> “{{ customerById.get(t.customer_id)!.nickname }}”</span></div>
+                          <div v-if="tagsOf(t.customer_id).length" class="taken-by-tags"><TagChips :tags="tagsOf(t.customer_id)" :max="6" /></div>
                           <div class="taken-by-row"><span>Phone</span><strong>{{ customerById.get(t.customer_id)!.phone || '—' }}</strong></div>
                           <div class="taken-by-row"><span>ID number</span><strong>{{ customerById.get(t.customer_id)!.id_number || '—' }}</strong></div>
                           <div class="taken-by-row"><span>Address</span><strong>{{ customerById.get(t.customer_id)!.address || '—' }}</strong></div>
@@ -1908,7 +1924,7 @@ onMounted(() => {
   --bg:        #F7F5F2;
   --surface:   #ffffff;
   --surface2:  #f7f5f2;
-  --border:    rgba(0,0,0,0.08);
+  --border:    rgba(0,0,0,0.16);
   --text:      #1a1a1a;
   --text-sub:  #6b6660;
   --text-muted:#B0ADA5;
@@ -2056,6 +2072,8 @@ onMounted(() => {
 .expand-item.gift-line { background: rgba(167,139,250,0.10); border-radius: 10px; }
 .gift-badge { padding: 2px 9px; border-radius: 999px; background: #a78bfa; color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .06em; white-space: nowrap; }
 .page-wrap.light .gift-badge { background: #7c3aed; }
+.taken-by-nick { font-weight: 400; font-style: italic; color: var(--text-sub); font-size: 12px; }
+.taken-by-tags { margin: 4px 0 6px; }
 .row-gift-tag { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: rgba(167,139,250,0.16); color: #a78bfa; border: 1px solid rgba(167,139,250,0.4); font-family: 'DM Sans', sans-serif; font-size: 10px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; }
 .page-wrap.light .row-gift-tag { background: #f3efff; color: #7c3aed; border-color: #c4b5fd; }
 .gift-state { font-size: 11px; color: var(--text-sub); white-space: nowrap; }

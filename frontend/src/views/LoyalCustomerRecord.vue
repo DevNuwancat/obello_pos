@@ -19,6 +19,9 @@ import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import PayLaterCustomerBookModal from '../components/modals/PayLaterCustomerBookModal.vue'
 import EditPayLaterCustomerModal from '../components/modals/EditPayLaterCustomerModal.vue'
+import TagChips from '../components/TagChips.vue'
+import TagFilter from '../components/TagFilter.vue'
+import { useCustomerTags } from '../composables/useCustomerTags'
 import { supabase } from '../lib/supabase'
 import { markConnected, markError } from '../lib/connectionStatus'
 
@@ -38,7 +41,7 @@ interface Purchase {
   payment_method: string | null
   invoice_no: string | null
   purchased_at: string
-  pay_later_customers: { name: string; phone: string | null } | null
+  pay_later_customers: { name: string; phone: string | null; nickname: string | null } | null
 }
 
 // A customer's saved contact details (same fields as the Edit Contact modal)
@@ -47,6 +50,8 @@ interface Contact {
   name: string
   id_number: string | null
   phone: string | null
+  whatsapp?: string | null
+  nickname?: string | null
   address: string | null
 }
 
@@ -102,6 +107,13 @@ function monthRange(month: string) {
 // ──────────────────────────────────────────────
 // 4. SEARCH — typing a name searches ALL months
 // ──────────────────────────────────────────────
+// Tags (location / organization): filter pills + chips next to each customer
+const { tags, tagCounts, loadTags, tagsOf, matchesTag, customerIdsWithTagText } = useCustomerTags()
+const tagFilter = ref<string | null>(null)
+const tagOptions = computed(() =>
+  tags.value.map(t => ({ id: t.id, name: t.name, color: t.color, count: tagCounts.value.get(t.id) ?? 0 }))
+)
+
 const searchQuery = ref('')
 const isSearching = computed(() => searchQuery.value.trim().length > 0)
 
@@ -129,10 +141,15 @@ async function fetchRecords() {
     // Name search: find the matching customers first, then load all their records
     let customerIds: string[] | null = null
     if (q) {
+      // Finds the name, the nickname, or anyone carrying a tag with that name
+      const safe = q.replace(/[%,()]/g, ' ')
+      const tagIds = customerIdsWithTagText(q)
+      const orParts = [`name.ilike.%${safe}%`, `nickname.ilike.%${safe}%`]
+      if (tagIds.length) orParts.push(`id.in.(${tagIds.join(',')})`)
       const { data: custs, error: custErr } = await supabase
         .from('pay_later_customers')
-        .select('id, name, id_number, phone, address')
-        .ilike('name', `%${q}%`)
+        .select('id, name, id_number, phone, whatsapp, nickname, address')
+        .or(orParts.join(','))
         .order('name')
       if (custErr) { fetchError.value = custErr.message; markError(); return }
       matchedCustomers.value = (custs ?? []) as Contact[]
@@ -148,7 +165,7 @@ async function fetchRecords() {
     while (true) {
       let query = supabase
         .from('loyal_purchases')
-        .select('*, pay_later_customers(name, phone)')
+        .select('*, pay_later_customers(name, phone, nickname)')
         .order('purchased_at', { ascending: false })
         .range(from, from + PAGE_SIZE - 1)
 
@@ -168,7 +185,8 @@ async function fetchRecords() {
       from += PAGE_SIZE
     }
 
-    records.value = all
+    // Tag filter: keep only the purchases of customers that carry the chosen tag
+    records.value = tagFilter.value ? all.filter(r => matchesTag(r.customer_id, tagFilter.value)) : all
     currentPage.value = 1
     markConnected()
   } catch {
@@ -181,6 +199,7 @@ async function fetchRecords() {
 
 // Reload when the month changes, and (after a short pause in typing) when the search changes
 watch(selectedMonth, fetchRecords)
+watch(tagFilter, fetchRecords)
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 watch(searchQuery, () => {
   // A name search always shows the person's records, so jump back to that tab
@@ -369,7 +388,7 @@ function showToastMsg(msg: string) {
 // ──────────────────────────────────────────────
 // 12. INIT
 // ──────────────────────────────────────────────
-onMounted(fetchRecords)
+onMounted(async () => { await loadTags(); fetchRecords() })
 </script>
 
 
@@ -421,6 +440,11 @@ onMounted(fetchRecords)
         <button class="tab" :class="{ active: activeTab === 'spent' }" @click="activeTab = 'spent'">Top by Spending</button>
       </div>
 
+      <!-- ── TAG FILTER ── -->
+      <div v-if="tags.length" class="tag-bar">
+        <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="customerCount" />
+      </div>
+
       <!-- ── TOOLBAR ── -->
       <div class="toolbar">
         <!-- Month picker (hidden while searching, because a search covers every month) -->
@@ -437,7 +461,7 @@ onMounted(fetchRecords)
 
         <div class="search-box">
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
-          <input v-model="searchQuery" type="text" placeholder="Search customer name (all months)…" />
+          <input v-model="searchQuery" type="text" placeholder="Search name, nickname or tag (all months)…" />
         </div>
 
         <div class="toolbar-right">
@@ -462,9 +486,11 @@ onMounted(fetchRecords)
           <div class="person-top">
             <div class="avatar">{{ c.contact.name.charAt(0).toUpperCase() }}</div>
             <div class="person-info">
-              <div class="person-name">{{ c.contact.name }}</div>
+              <div class="person-name">{{ c.contact.name }}<span v-if="c.contact.nickname" class="nick"> “{{ c.contact.nickname }}”</span></div>
+              <div v-if="tagsOf(c.contact.id).length" class="row-tags"><TagChips :tags="tagsOf(c.contact.id)" :max="6" /></div>
               <div class="person-contact">
                 <span><span class="contact-label">Phone</span> {{ c.contact.phone || '—' }}</span>
+                <span v-if="c.contact.whatsapp"><span class="contact-label">WhatsApp</span> {{ c.contact.whatsapp === c.contact.phone ? 'same' : c.contact.whatsapp }}</span>
                 <span><span class="contact-label">ID Number</span> {{ c.contact.id_number || '—' }}</span>
                 <span><span class="contact-label">Address</span> {{ c.contact.address || '—' }}</span>
               </div>
@@ -534,7 +560,7 @@ onMounted(fetchRecords)
                 @click="openCustomer(r.name)"
               >
                 <td><span class="rank-badge" :class="index < 3 ? 'rank-' + (index + 1) : ''">{{ index + 1 }}</span></td>
-                <td class="name-cell">{{ r.name }}</td>
+                <td class="name-cell">{{ r.name }}<div v-if="tagsOf(r.customer_id).length" class="row-tags"><TagChips :tags="tagsOf(r.customer_id)" /></div></td>
                 <td class="date-cell">{{ r.phone || '—' }}</td>
                 <td class="price-cell" style="text-align:right" :class="{ 'cell-key': activeTab === 'items' }">{{ r.items }}</td>
                 <td class="price-cell" style="text-align:right">{{ r.purchases }}</td>
@@ -578,6 +604,8 @@ onMounted(fetchRecords)
                 <td class="date-cell">{{ fmtDate(r.purchased_at) }}</td>
                 <td class="name-cell">
                   {{ r.pay_later_customers?.name ?? 'Unknown customer' }}
+                  <span v-if="r.pay_later_customers?.nickname" class="nick"> “{{ r.pay_later_customers.nickname }}”</span>
+                  <div v-if="tagsOf(r.customer_id).length" class="row-tags"><TagChips :tags="tagsOf(r.customer_id)" /></div>
                   <div class="cust-id">{{ r.pay_later_customers?.phone || '' }}</div>
                 </td>
                 <td>
@@ -655,7 +683,7 @@ onMounted(fetchRecords)
   --bg:        #F7F5F2;
   --surface:   #ffffff;
   --surface2:  #f7f5f2;
-  --border:    rgba(0,0,0,0.08);
+  --border:    rgba(0,0,0,0.16);
   --text:      #1a1a1a;
   --text-sub:  #6b6660;
   --text-muted:#B0ADA5;
@@ -720,6 +748,9 @@ onMounted(fetchRecords)
 .month-btn:hover:not(:disabled) { background: var(--surface2); color: var(--text); }
 .month-btn:disabled { opacity: .3; cursor: default; }
 .month-label { min-width: 140px; text-align: center; font-size: 13px; font-weight: 600; }
+.nick { font-weight: 400; font-style: italic; color: var(--text-sub); font-size: 12px; }
+.row-tags { margin-top: 3px; }
+.tag-bar { margin: 14px 32px 0; }
 .search-note { font-size: 12.5px; color: var(--green); font-weight: 600; padding: 0 4px; }
 
 .search-box {

@@ -260,8 +260,8 @@ function close() {
   --bg-panel:   #FFFFFF;
   --bg-card:    #FAFAF8;
   --bg-hover:   #F0EDE9;
-  --border:     rgba(0,0,0,0.07);
-  --border-mid: rgba(0,0,0,0.12);
+  --border:     rgba(0,0,0,0.16);
+  --border-mid: rgba(0,0,0,0.26);
   --text:       #141412;
   --text-sub:   #7A776F;
   --text-muted: #B0ADA5;

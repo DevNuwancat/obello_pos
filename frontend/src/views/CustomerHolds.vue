@@ -17,6 +17,9 @@ import { ref, computed, onMounted } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import TagChips from '../components/TagChips.vue'
+import TagFilter from '../components/TagFilter.vue'
+import { useCustomerTags, NO_TAG } from '../composables/useCustomerTags'
 import { supabase } from '../lib/supabase'
 import { markConnected, markError } from '../lib/connectionStatus'
 
@@ -44,6 +47,7 @@ interface Hold {
   created_at: string
   pay_later_customers: {
     name: string
+    nickname: string | null
     phone: string | null
     id_number: string | null
     address: string | null
@@ -71,7 +75,7 @@ async function fetchHolds() {
   try {
     const { data, error } = await supabase
       .from('customer_holds')
-      .select('*, pay_later_customers(name, phone, id_number, address), customer_hold_items(*)')
+      .select('*, pay_later_customers(name, nickname, phone, id_number, address), customer_hold_items(*)')
       .order('created_at', { ascending: false })
     if (error) { fetchError.value = error.message; markError(); return }
     holds.value = (data ?? []) as Hold[]
@@ -135,6 +139,14 @@ const itemsWaiting = computed(() => temporaryHolds.value.reduce((s, h) => s + ho
 // ──────────────────────────────────────────────
 const activeTab   = ref<HoldStatus>('temporary')
 const searchQuery = ref('')
+// Tags (location / organization)
+const { tags, loadTags, tagsOf, matchesTag, tagSearchText } = useCustomerTags()
+const tagFilter = ref<string | null>(null)
+const tagOptions = computed(() =>
+  tags.value.map(t => ({ id: t.id, name: t.name, color: t.color, count: holds.value.filter(h => matchesTag(h.customer_id, t.id)).length }))
+)
+const untaggedCount = computed(() => holds.value.filter(h => matchesTag(h.customer_id, NO_TAG)).length)
+
 type SortMode = 'latest' | 'az'
 const sortMode = ref<SortMode>('latest')
 
@@ -142,7 +154,13 @@ const filteredHolds = computed(() => {
   let list = holds.value.filter(h => holdStatus(h) === activeTab.value)
 
   const q = searchQuery.value.toLowerCase().trim()
-  if (q) list = list.filter(h => (h.pay_later_customers?.name ?? '').toLowerCase().includes(q))
+  list = list.filter(h => matchesTag(h.customer_id, tagFilter.value))
+  if (q) list = list.filter(h =>
+    (h.pay_later_customers?.name ?? '').toLowerCase().includes(q) ||
+    (h.pay_later_customers?.nickname ?? '').toLowerCase().includes(q) ||
+    (h.pay_later_customers?.phone ?? '').toLowerCase().includes(q) ||
+    tagSearchText(h.customer_id).includes(q)
+  )
 
   if (sortMode.value === 'az') {
     list = [...list].sort((a, b) => (a.pay_later_customers?.name ?? '').localeCompare(b.pay_later_customers?.name ?? ''))
@@ -310,7 +328,7 @@ function showToastMsg(msg: string) {
 // ──────────────────────────────────────────────
 // 12. INIT
 // ──────────────────────────────────────────────
-onMounted(fetchHolds)
+onMounted(() => { loadTags(); fetchHolds() })
 </script>
 
 
@@ -368,11 +386,16 @@ onMounted(fetchHolds)
         </button>
       </div>
 
+      <!-- ── TAG FILTER ── -->
+      <div v-if="tags.length" class="tag-bar">
+        <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="holds.length" :noTagCount="untaggedCount" />
+      </div>
+
       <!-- ── TOOLBAR ── -->
       <div class="toolbar">
         <div class="search-box">
           <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path stroke-linecap="round" d="m21 21-4.35-4.35"/></svg>
-          <input v-model="searchQuery" type="text" placeholder="Search by name…" />
+          <input v-model="searchQuery" type="text" placeholder="Search name, nickname, phone or tag…" />
         </div>
 
         <div class="sort-chips">
@@ -429,6 +452,8 @@ onMounted(fetchHolds)
                   <td>{{ index + 1 }}</td>
                   <td class="name-cell">
                     {{ h.pay_later_customers?.name ?? 'Unknown customer' }}
+                    <span v-if="h.pay_later_customers?.nickname" class="nick"> “{{ h.pay_later_customers.nickname }}”</span>
+                    <div v-if="tagsOf(h.customer_id).length" class="row-tags"><TagChips :tags="tagsOf(h.customer_id)" /></div>
                     <div class="cust-id">{{ h.pay_later_customers?.id_number || '' }}</div>
                   </td>
                   <td class="date-cell">{{ h.pay_later_customers?.phone || '—' }}</td>
@@ -561,7 +586,7 @@ onMounted(fetchHolds)
   --bg:        #F7F5F2;
   --surface:   #ffffff;
   --surface2:  #f7f5f2;
-  --border:    rgba(0,0,0,0.08);
+  --border:    rgba(0,0,0,0.16);
   --text:      #1a1a1a;
   --text-sub:  #6b6660;
   --text-muted:#B0ADA5;
@@ -697,6 +722,9 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .expand-section-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-sub); margin-bottom: 8px; }
 
 .contact-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12.5px; color: var(--text); }
+.nick { font-weight: 400; font-style: italic; color: var(--text-sub); font-size: 12px; }
+.row-tags { margin-top: 3px; }
+.tag-bar { margin: 14px 32px 0; }
 .contact-label { color: var(--text-muted); font-size: 10.5px; display: block; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
 
 .bill-card { background: var(--surface); border: 1px solid var(--border); border-radius: 9px; padding: 6px 12px; }
