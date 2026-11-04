@@ -11,6 +11,8 @@ import SizeGroupModal from "../components/modals/SizeGroupModal.vue";
 import ViewSizeGroupsModal from "../components/modals/ViewSizeGroupsModal.vue";
 import OwnerModal from "../components/modals/OwnerModal.vue";
 import ViewOwnersModal from "../components/modals/ViewOwnersModal.vue";
+import AddCustomerModal from "../components/modals/AddCustomerModal.vue";
+import PayLaterCustomerBookModal from "../components/modals/PayLaterCustomerBookModal.vue";
 
 const router = useRouter();
 
@@ -55,6 +57,13 @@ const sections = [
     description: "Add new supplier and view them",
     color: "#808080",
     icon: '<i class="fa-solid fa-user"></i>',
+  },
+  {
+    key: "customer-book",
+    label: "Customer Book",
+    description: "Add new customers (mobile, WhatsApp, nickname, tags) and view them",
+    color: "#808080",
+    icon: '<i class="fa-solid fa-address-book"></i>',
   },
 ];
 
@@ -131,6 +140,33 @@ const showViewOwnersModal = computed({
     if (!val) activeModal.value = null;
   },
 });
+
+// ── CUSTOMER BOOK ──
+// "View" opens the whole book (search, edit, tags). The book has its own "+ New Customer" button:
+// it closes the book, opens the form, and brings the book back when the form closes.
+let returnToBook = false;
+
+const showViewCustomerBook = computed({
+  get: () => activeModal.value === "view-customer-book",
+  set: (val) => {
+    if (!val) activeModal.value = null;
+  },
+});
+
+const showAddCustomerModal = computed({
+  get: () => activeModal.value === "customer-book",
+  set: (val) => {
+    if (!val) {
+      activeModal.value = returnToBook ? "view-customer-book" : null;
+      returnToBook = false;
+    }
+  },
+});
+
+function openAddCustomerFromBook() {
+  returnToBook = true;
+  activeModal.value = "customer-book";
+}
 </script>
 
 <template>
@@ -204,6 +240,13 @@ const showViewOwnersModal = computed({
             >
               <i class="fa-regular fa-eye"></i> View
             </button>
+            <button
+              v-else-if="section.key === 'customer-book'"
+              class="btn-view"
+              @click="openModal('view-customer-book')"
+            >
+              <i class="fa-regular fa-eye"></i> View
+            </button>
             <button class="btn-add" @click="openModal(section.key)">
               + Add New
             </button>
@@ -222,6 +265,12 @@ const showViewOwnersModal = computed({
     <ViewSizeGroupsModal v-model="showViewSizeGroupsModal" :isLight="isLight" />
     <OwnerModal v-model="showOwnerModal" :isLight="isLight" />
     <ViewOwnersModal v-model="showViewOwnersModal" :isLight="isLight" />
+    <AddCustomerModal v-model="showAddCustomerModal" :isLight="isLight" />
+    <PayLaterCustomerBookModal
+      v-model="showViewCustomerBook"
+      :isLight="isLight"
+      @newCustomer="openAddCustomerFromBook"
+    />
   </div>
 </template>
 

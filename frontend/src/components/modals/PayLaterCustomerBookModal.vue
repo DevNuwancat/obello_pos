@@ -18,6 +18,7 @@ const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
 const emit  = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
   (e: 'changed'): void   // tells PayLaterView to refresh its own ledger table
+  (e: 'newCustomer'): void   // the "+ New Customer" button: PayLaterView opens its add form
 }>()
 
 // ── DATA SHAPE — same fields the pay_later_balances view already gives us ──
@@ -194,6 +195,10 @@ function close() {
             <div class="modal-title">Customer Book</div>
             <div class="modal-sub">Every Pay Later contact — search, edit or remove</div>
           </div>
+          <button class="new-btn" @click="emit('newCustomer')" title="Add a new customer">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Customer
+          </button>
           <button class="modal-close" @click="close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -421,4 +426,11 @@ function close() {
 .tm-msg { font-size: 12px; color: var(--red); }
 .slide-enter-active, .slide-leave-active { transition: opacity .18s ease, max-height .22s ease; overflow: hidden; }
 .slide-enter-from, .slide-leave-to { opacity: 0; max-height: 0; }
+.new-btn {
+  margin-left: auto; margin-right: 12px; display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 9px; border: none; cursor: pointer;
+  background: var(--accent-bg); color: var(--accent-text); font-size: 12.5px; font-weight: 600; font-family: 'DM Sans', sans-serif;
+  transition: opacity .15s;
+}
+.new-btn:hover { opacity: .85; }
 </style>

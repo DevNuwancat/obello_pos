@@ -12,15 +12,13 @@
 // ──────────────────────────────────────────────
 // 1. IMPORTS
 // ──────────────────────────────────────────────
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
-import { phoneError, whatsappError, whatsappLink, normalizePhone } from '../lib/phone'
-import PhoneFields from '../components/PhoneFields.vue'
+import { whatsappLink } from '../lib/phone'
 import PayLaterRecovery from '../components/PayLaterRecovery.vue'
-import TagPicker from '../components/TagPicker.vue'
 import TagChips from '../components/TagChips.vue'
 import TagFilter from '../components/TagFilter.vue'
 import { useCustomerTags, NO_TAG } from '../composables/useCustomerTags'
@@ -307,7 +305,7 @@ const paidAccounts    = computed(() => customers.value.filter(c => hasCredit(c) 
 type Tab = 'pending' | 'paid' | 'recovery'
 const activeTab = ref<Tab>('pending')
 
-const { tags, loadTags, tagsOf, matchesTag, tagSearchText, setCustomerTags } = useCustomerTags()
+const { tags, loadTags, tagsOf, matchesTag, tagSearchText } = useCustomerTags()
 const tagFilter = ref<string | null>(null)
 
 const searchQuery = ref('')
@@ -580,25 +578,8 @@ const showCustomerBook = ref(false)
 // 10. ADD NEW CUSTOMER MODAL
 // ──────────────────────────────────────────────
 const showAddModal = ref(false)
-const newName       = ref('')
-const newIdNum       = ref('')
-const newPhone       = ref('')
-const newWhatsapp    = ref('')
-const newNickname    = ref('')
-const newTagIds      = ref<string[]>([])
-const newFormKey     = ref(0)
-const newAddress     = ref('')
-const newShowErr      = ref(false)
-const newSaving       = ref(false)
-const newError        = ref('')
 
-// Is the typed mobile number already saved for another customer?
-const newDuplicate = computed(() => {
-  const key = normalizePhone(newPhone.value)
-  return key ? (customers.value.find(c => normalizePhone(c.phone) === key) ?? null) : null
-})
-
-// "Use <name>": close the form and show that customer's row
+// "Use <name>" (the number already exists): close the form and show that customer's row
 function showExistingCustomer(id: string) {
   const c = customers.value.find(x => x.id === id)
   showAddModal.value = false
@@ -608,36 +589,24 @@ function showExistingCustomer(id: string) {
   expandedIds.value = new Set([id])
 }
 
-function openAddModal() {
-  newName.value = ''; newIdNum.value = ''; newPhone.value = ''; newWhatsapp.value = ''; newNickname.value = ''; newTagIds.value = []; newFormKey.value++; newAddress.value = ''
-  newShowErr.value = false; newError.value = ''
+// "+ New Customer" lives inside the Customer Book. The book closes while the form is open
+// and comes back when the form closes (saved or cancelled), so you land back in the book.
+const addFromBook = ref(false)
+function openAddFromBook() {
+  addFromBook.value = true
+  showCustomerBook.value = false
   showAddModal.value = true
 }
+watch(showAddModal, (open) => {
+  if (!open && addFromBook.value) {
+    addFromBook.value = false
+    showCustomerBook.value = true
+  }
+})
 
-async function submitNewCustomer() {
-  // Name and a valid mobile number are both required
-  if (newDuplicate.value) return   // the warning under the mobile field explains why
-  if (!newName.value.trim() || phoneError(newPhone.value) || whatsappError(newWhatsapp.value)) { newShowErr.value = true; return }
-  newSaving.value = true
-  newError.value  = ''
-
-  const { data: created, error } = await supabase.from('pay_later_customers').insert({
-    name:      newName.value.trim(),
-    nickname:  newNickname.value.trim() || null,
-    id_number: newIdNum.value || null,
-    phone:     newPhone.value.trim(),
-    whatsapp:  newWhatsapp.value.trim() || null,
-    address:   newAddress.value || null,
-  }).select('id').single()
-
-  newSaving.value = false
-
-  if (error || !created) { newError.value = error?.message ?? 'Could not save'; return }
-  if (newTagIds.value.length) await setCustomerTags(created.id, newTagIds.value)
-
-  showAddModal.value = false
-  await fetchAll()
-  showToastMsg(`${newName.value.trim()} registered`)
+// The form (AddCustomerModal) saved the customer: reload the list
+function onCustomerAdded() {
+  fetchAll()
 }
 
 
@@ -687,36 +656,6 @@ function collectedSince(from: Date): number {
   return payments.value
     .filter(p => new Date(p.paid_at).getTime() >= from.getTime())
     .reduce((sum, p) => sum + Number(p.amount), 0)
-}
-
-// ──────────────────────────────────────────────
-// 12. EXPORT CSV
-// ──────────────────────────────────────────────
-function exportCSV() {
-  const headers = ['Name', 'Nickname', 'Tags', 'Phone', 'ID Number', 'Total Billed', 'Total Loaned', 'Total Paid', 'Total Owed', 'Last Bill', 'Last Payment', 'Status']
-  const rows = filteredCustomers.value.map(c => [
-    c.name,
-    c.nickname || '',
-    tagsOf(c.id).map(t => t.name).join(' / '),
-    c.phone || '—',
-    c.id_number || '—',
-    c.total_billed.toFixed(2),
-    Number(c.total_loaned).toFixed(2),
-    c.total_paid.toFixed(2),
-    c.total_owed.toFixed(2),
-    fmtDate(c.last_bill_at),
-    fmtDate(c.last_payment_at),
-    c.total_owed > 0 ? 'Pending' : 'Paid',
-  ])
-  const csv = [headers, ...rows]
-    .map(r => r.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    .join('\n')
-  const a = Object.assign(document.createElement('a'), {
-    href: 'data:text/csv,' + encodeURIComponent(csv),
-    download: `pay-later-${new Date().toISOString().slice(0, 10)}.csv`,
-  })
-  a.click()
-  showToastMsg('CSV exported')
 }
 
 // ──────────────────────────────────────────────
@@ -1030,21 +969,13 @@ onMounted(async () => {
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.08-6.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             Refresh
           </button>
-          <button class="btn btn-outline" @click="exportCSV">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-            Export CSV
-          </button>
           <button class="btn btn-outline" @click="exportPDF">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6z"/></svg>
             Export PDF
           </button>
-          <button class="btn btn-outline" @click="showCustomerBook = true" title="Browse, search, edit or delete every Pay Later contact">
+          <button class="btn btn-primary" @click="showCustomerBook = true" title="Browse, add, edit or delete every Pay Later contact">
             <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path stroke-linecap="round" stroke-linejoin="round" d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
             Customer Book
-          </button>
-          <button class="btn btn-primary" @click="openAddModal">
-            <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-            New Customer
           </button>
         </div>
       </div>
@@ -1359,59 +1290,13 @@ onMounted(async () => {
     <!-- ══════════════════════════════════════ -->
     <!--    ADD NEW CUSTOMER MODAL             -->
     <!-- ══════════════════════════════════════ -->
-    <Transition name="fade">
-      <div v-if="showAddModal" class="modal-overlay" :class="{ light: isLight }">
-        <div class="modal-box">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">Register Pay Later Customer</div>
-              <div class="modal-sub">Add a new credit account</div>
-            </div>
-            <button class="modal-close" @click="showAddModal = false">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </div>
-
-          <div class="modal-body">
-            <div class="form-field">
-              <label class="form-label">Full Name <span class="req">*</span></label>
-              <input v-model="newName" class="form-input" :class="{ error: newShowErr && !newName.trim() }" placeholder="e.g. Shashika Nuwan" />
-              <span v-if="newShowErr && !newName.trim()" class="form-error">Name is required</span>
-            </div>
-            <div class="form-field">
-              <label class="form-label">Nickname</label>
-              <input v-model="newNickname" class="form-input" placeholder="Optional — what people call them" autocomplete="off" />
-            </div>
-            <div class="form-field">
-              <label class="form-label">ID Number</label>
-              <input v-model="newIdNum" class="form-input" placeholder="National ID / Passport" />
-            </div>
-            <PhoneFields
-              :key="newFormKey"
-              v-model:mobile="newPhone"
-              v-model:whatsapp="newWhatsapp"
-              :showErrors="newShowErr"
-              :startSame="true"
-              :duplicate="newDuplicate"
-              @useExisting="showExistingCustomer"
-            />
-            <TagPicker v-model="newTagIds" />
-            <div class="form-field">
-              <label class="form-label">Address</label>
-              <textarea v-model="newAddress" class="form-input textarea" rows="3" placeholder="Street, City…" />
-            </div>
-            <div v-if="newError" class="save-error">{{ newError }}</div>
-          </div>
-
-          <div class="modal-footer">
-            <button class="modal-cancel" :disabled="newSaving" @click="showAddModal = false">Cancel</button>
-            <button class="modal-save" :disabled="newSaving" @click="submitNewCustomer">
-              {{ newSaving ? 'Saving…' : 'Add Customer' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </Transition>
+    <AddCustomerModal
+      v-model="showAddModal"
+      :isLight="isLight"
+      :allowUse="true"
+      @saved="onCustomerAdded"
+      @useExisting="showExistingCustomer"
+    />
 
     <!-- ══════════════════════════════════════ -->
     <!--    CUSTOMER BOOK — all contacts       -->
@@ -1420,6 +1305,7 @@ onMounted(async () => {
       v-model="showCustomerBook"
       :isLight="isLight"
       @changed="fetchAll"
+      @newCustomer="openAddFromBook"
     />
 
     <!-- ── TOAST ── -->
