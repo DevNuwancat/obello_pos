@@ -7,3 +7,25 @@
 * {
   font-family: 'DM Sans', sans-serif;
 }
+
+
+/* ── Smooth, slim scrollbars everywhere (Chrome / Edge / Safari) ──
+   Transparent track; the thumb is a soft rounded pill that brightens on hover.
+   The transparent border + background-clip makes it float away from the edge. */
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(128, 128, 128, .28);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+  transition: background-color .2s;
+}
+*::-webkit-scrollbar-thumb:hover { background-color: rgba(128, 128, 128, .55); }
+*::-webkit-scrollbar-thumb:active { background-color: rgba(128, 128, 128, .7); }
+
+/* Firefox doesn't know the rules above, so give it the thin-scrollbar equivalent */
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: rgba(128, 128, 128, .35) transparent; }
+}

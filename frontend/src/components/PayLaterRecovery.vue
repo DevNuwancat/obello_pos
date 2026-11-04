@@ -14,6 +14,7 @@
 -->
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import CalendarPicker from './CalendarPicker.vue'
 import { supabase } from '../lib/supabase'
 import { markConnected, markError } from '../lib/connectionStatus'
 import { useCustomerTags } from '../composables/useCustomerTags'
@@ -145,7 +146,29 @@ async function load() {
   }
 }
 
-onMounted(() => { loadTags(); load() })
+// Which days / months had a payment — these get a green dot in the calendar.
+// Only paid_at and amount are fetched, so it stays light even with many payments.
+const paidDays   = ref(new Set<string>())
+const paidMonths = ref(new Set<string>())
+
+async function loadPaidDates() {
+  try {
+    const rows = await fetchAllRows((from, to) =>
+      supabase.from('pay_later_payments').select('paid_at, amount').gt('amount', 0).order('id').range(from, to)
+    )
+    const days = new Set<string>()
+    const months = new Set<string>()
+    for (const r of rows as { paid_at: string }[]) {
+      const d = toDateStr(new Date(r.paid_at))   // local date, same as the report itself
+      days.add(d)
+      months.add(d.slice(0, 7))
+    }
+    paidDays.value   = days
+    paidMonths.value = months
+  } catch { /* dots are a nice extra — the report still works without them */ }
+}
+
+onMounted(() => { loadTags(); load(); loadPaidDates() })
 watch([mode, date, month], load)
 
 // ──────────────────────────────────────────────
@@ -310,8 +333,8 @@ function exportPDF() {
 
       <div class="nav">
         <button class="nav-btn" title="Previous" @click="mode === 'daily' ? shiftDay(-1) : shiftMonth(-1)">‹</button>
-        <input v-if="mode === 'daily'" v-model="date" type="date" class="nav-input" :max="todayStr" />
-        <input v-else v-model="month" type="month" class="nav-input" :max="thisMonthStr" />
+        <CalendarPicker v-if="mode === 'daily'" v-model="date" mode="day" :max="todayStr" :marked="paidDays" />
+        <CalendarPicker v-else v-model="month" mode="month" :max="thisMonthStr" :marked="paidMonths" />
         <button class="nav-btn" title="Next" :disabled="!canNext" @click="mode === 'daily' ? shiftDay(1) : shiftMonth(1)">›</button>
         <button v-if="mode === 'daily' ? date !== todayStr : month !== thisMonthStr" class="nav-today" @click="date = todayStr; month = thisMonthStr">
           {{ mode === 'daily' ? 'Today' : 'This month' }}

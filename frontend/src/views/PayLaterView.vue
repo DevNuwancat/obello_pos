@@ -26,6 +26,7 @@ import { useCustomerTags, NO_TAG } from '../composables/useCustomerTags'
 import { markConnected, markError } from '../lib/connectionStatus'
 import { useAuthStore } from '../store/auth'
 import PayLaterCustomerBookModal from '../components/modals/PayLaterCustomerBookModal.vue'
+import AddCustomerModal from '../components/modals/AddCustomerModal.vue'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 

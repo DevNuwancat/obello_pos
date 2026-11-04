@@ -18,17 +18,25 @@ const extra = computed(() => props.tags.length - shown.value.length)
       v-for="t in shown"
       :key="t.id"
       class="tag-chip"
-      :style="{ color: t.color, background: t.color + '22', borderColor: t.color + '66' }"
+      :style="{ '--c': t.color }"
     >{{ t.name }}</span>
     <span v-if="extra > 0" class="tag-chip tag-more" :title="tags.slice(max).map(t => t.name).join(', ')">+{{ extra }}</span>
   </span>
 </template>
 
 <style scoped>
-.tag-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; }
+.tag-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle; }
+
+/* Small frosted-glass chip, tinted by the tag's colour (--c) */
 .tag-chip {
-  display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid;
-  font-family: 'DM Sans', sans-serif; font-size: 10.5px; font-weight: 600; line-height: 1.55; white-space: nowrap;
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--c) 40%, transparent);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--c) 22%, transparent), color-mix(in srgb, var(--c) 7%, transparent));
+  backdrop-filter: blur(8px) saturate(150%);
+  -webkit-backdrop-filter: blur(8px) saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14);
+  color: var(--c);
+  font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: .01em; line-height: 1.6; white-space: nowrap;
 }
-.tag-more { color: var(--text-sub, #888); background: transparent; border-color: var(--border, rgba(128,128,128,.3)); }
+.tag-more { --c: var(--text-sub, #888); color: var(--text-sub, #888); background: transparent; box-shadow: none; border-color: var(--border, rgba(128,128,128,.3)); }
 </style>

@@ -38,12 +38,10 @@ function pick(id: string | null) {
       :key="o.id"
       class="tf-pill"
       :class="{ active: selected === o.id }"
-      :style="selected === o.id
-        ? { background: o.color, borderColor: o.color, color: '#fff' }
-        : { borderColor: o.color + '66' }"
+      :style="{ '--c': o.color }"
       @click="pick(o.id)"
     >
-      <span class="tf-dot" :style="{ background: selected === o.id ? '#fff' : o.color }"></span>
+      <span class="tf-dot"></span>
       <span class="tf-text">
         <span class="tf-name">{{ o.name }} <span class="tf-count">{{ o.count }}</span></span>
         <span v-if="o.sub" class="tf-sub">{{ o.sub }}</span>
@@ -57,16 +55,49 @@ function pick(id: string | null) {
 
 <style scoped>
 .tf { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Frosted-glass pill: tinted by the tag's colour (--c), soft blur, light top edge */
 .tf-pill {
-  display: inline-flex; align-items: center; gap: 7px; padding: 6px 13px; border-radius: 999px;
-  border: 1px solid var(--border-mid, var(--border)); background: var(--bg-card, var(--bg)); color: var(--text-sub);
-  font-family: 'DM Sans', sans-serif; font-size: 12px; cursor: pointer; transition: transform .15s, background .15s, border-color .15s;
+  --c: var(--text-sub, #888);
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--c) 38%, transparent);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--c) 20%, transparent), color-mix(in srgb, var(--c) 6%, transparent));
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.14), 0 2px 8px rgba(0,0,0,.12);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif; font-size: 12.5px; font-weight: 500; letter-spacing: .01em;
+  cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease;
 }
-.tf-pill:hover { transform: translateY(-1px); color: var(--text); }
-.tf-pill.active { background: var(--accent, var(--accent-bg, #222)); border-color: var(--accent, var(--accent-bg, #222)); color: var(--accent-fg, var(--accent-text, #fff)); font-weight: 600; }
-.tf-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.tf-text { display: flex; flex-direction: column; line-height: 1.25; text-align: left; }
-.tf-sub { font-size: 10.5px; opacity: .8; font-family: 'DM Mono', monospace; }
-.tf-count { font-size: 10.5px; opacity: .65; margin-left: 2px; }
+.tf-pill:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--c) 60%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 6px 16px color-mix(in srgb, var(--c) 22%, transparent);
+}
+.tf-pill:active { transform: translateY(0) scale(.98); }
+
+/* Selected: solid glowing colour */
+.tf-pill.active {
+  background: linear-gradient(135deg, var(--c), color-mix(in srgb, var(--c) 72%, #000));
+  border-color: color-mix(in srgb, var(--c) 80%, #fff);
+  color: #fff; font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 6px 18px color-mix(in srgb, var(--c) 40%, transparent);
+}
+
+/* "All" has no colour of its own, so it uses the page's accent when selected */
+.tf-pill:not([style]).active {
+  background: var(--accent, var(--accent-bg, #222));
+  border-color: transparent;
+  color: var(--accent-fg, var(--accent-text, #fff));
+  box-shadow: 0 4px 14px rgba(0,0,0,.25);
+}
+
+.tf-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--c); box-shadow: 0 0 8px color-mix(in srgb, var(--c) 70%, transparent); }
+.tf-pill.active .tf-dot { background: #fff; box-shadow: 0 0 8px rgba(255,255,255,.7); }
+.tf-text { display: flex; flex-direction: column; line-height: 1.3; text-align: left; }
+.tf-sub { font-size: 10.5px; opacity: .75; font-family: 'DM Mono', monospace; letter-spacing: 0; }
+.tf-count { font-size: 11px; font-weight: 500; opacity: .6; margin-left: 3px; font-variant-numeric: tabular-nums; }
 .tf-none { border-style: dashed; }
 </style>

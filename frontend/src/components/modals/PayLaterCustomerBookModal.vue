@@ -446,9 +446,6 @@ function close() {
 .delete-btn:hover:not(:disabled) { color: #ef4444; background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.3); }
 .delete-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.modal-body::-webkit-scrollbar { width: 4px; }
-.modal-body::-webkit-scrollbar-track { background: transparent; }
-.modal-body::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.2); border-radius: 2px; }
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
