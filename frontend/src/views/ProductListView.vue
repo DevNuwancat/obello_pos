@@ -13,6 +13,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import AddClothModal from '../components/modals/AddClothModal.vue'
 import EditProductModal from '../components/modals/EditProductModal.vue'
 import ImportProductsModal from '../components/modals/ImportProductsModal.vue'
@@ -451,8 +452,33 @@ function onEditSaved() {
 // ──────────────────────────────────────────────
 // 14. DELETE PRODUCT (from database)
 // ──────────────────────────────────────────────
-async function deleteProduct(id: string) {
-  if (!confirm('Delete this product? This cannot be undone.')) return
+// ── CONFIRM MODAL — replaces the native browser confirm() popup ──
+const showConfirm      = ref(false)
+const confirmTitle     = ref('')
+const confirmMessage   = ref('')
+const confirmText      = ref('Confirm')
+const confirmIsDanger  = ref(true)
+const pendingAction    = ref<(() => void) | null>(null)
+
+function askConfirm(title: string, message: string, text: string, action: () => void, danger = true) {
+  confirmTitle.value    = title
+  confirmMessage.value  = message
+  confirmText.value     = text
+  confirmIsDanger.value = danger
+  pendingAction.value   = action
+  showConfirm.value     = true
+}
+
+function runPendingAction() {
+  pendingAction.value?.()
+  pendingAction.value = null
+}
+
+function deleteProduct(id: string) {
+  askConfirm('Delete product?', 'Delete this product? This cannot be undone.', 'Delete', () => doDeleteProduct(id))
+}
+
+async function doDeleteProduct(id: string) {
   const { error } = await supabase.from('products').delete().eq('id', id)
   if (error) {
     showToastMsg('Delete failed: ' + error.message)
@@ -589,6 +615,15 @@ onMounted(() => {
 
     <!-- ── SIDEBAR ── -->
     <Slidebar v-model:isLight="isLight" />
+    <ConfirmModal
+      v-model="showConfirm"
+      :isLight="isLight"
+      :title="confirmTitle"
+      :message="confirmMessage"
+      :confirmText="confirmText"
+      :danger="confirmIsDanger"
+      @confirm="runPendingAction"
+    />
 
     <!-- ══════════════════════════════════════ -->
     <!--              MAIN CONTENT             -->

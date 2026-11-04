@@ -10,6 +10,8 @@ import { supabase } from '../../lib/supabase'
 import { markConnected, markError } from '../../lib/connectionStatus'
 import Toast from '../Toast.vue'
 import EditPayLaterCustomerModal from './EditPayLaterCustomerModal.vue'
+import ConfirmModal from '../ConfirmModal.vue'
+import PromptModal from '../PromptModal.vue'
 import TagChips from '../TagChips.vue'
 import TagFilter from '../TagFilter.vue'
 import { useCustomerTags, TAG_COLORS, NO_TAG } from '../../composables/useCustomerTags'
@@ -88,23 +90,56 @@ async function addTag() {
   newTagColor.value = TAG_COLORS[(tags.value.length) % TAG_COLORS.length]
 }
 
-async function renameTag(id: string, current: string, color: string) {
-  const name = window.prompt('Rename tag', current)
-  if (name === null || name.trim() === current) return
-  tagMsg.value = await updateTag(id, name, color)
+// Rename: clicking the button opens our own pop-up; saving it runs the real rename
+const renameTarget = ref<{ id: string; name: string; color: string } | null>(null)
+const showRename   = ref(false)
+
+function renameTag(id: string, current: string, color: string) {
+  renameTarget.value = { id, name: current, color }
+  showRename.value   = true
+}
+
+async function onRenameSubmit(name: string) {
+  const t = renameTarget.value
+  if (!t || name === t.name) return
+  tagMsg.value = await updateTag(t.id, name, t.color)
 }
 
 async function recolorTag(id: string, name: string, color: string) {
   tagMsg.value = await updateTag(id, name, color)
 }
 
-async function removeTag(id: string, name: string) {
+// One shared "are you sure?" pop-up for both deletes (tag and contact)
+const showConfirm    = ref(false)
+const confirmTitle   = ref('')
+const confirmMessage = ref('')
+const confirmText    = ref('Delete')
+const pendingAction  = ref<(() => void) | null>(null)
+
+function askConfirm(title: string, message: string, action: () => void) {
+  confirmTitle.value   = title
+  confirmMessage.value = message
+  pendingAction.value  = action
+  showConfirm.value    = true
+}
+
+function runPendingAction() {
+  pendingAction.value?.()
+  pendingAction.value = null
+}
+
+function removeTag(id: string, name: string) {
   const n = tagCounts.value.get(id) ?? 0
-  if (!confirm(`Delete the tag "${name}"?${n ? ` It will be taken off ${n} customer${n === 1 ? '' : 's'}.` : ''}`)) return
-  const err = await deleteTag(id)
-  if (err) { tagMsg.value = err; return }
-  if (tagFilter.value === id) tagFilter.value = null
-  emit('changed')
+  askConfirm(
+    'Delete tag?',
+    `Delete the tag "${name}"?${n ? ` It will be taken off ${n} customer${n === 1 ? '' : 's'}.` : ''}`,
+    async () => {
+      const err = await deleteTag(id)
+      if (err) { tagMsg.value = err; return }
+      if (tagFilter.value === id) tagFilter.value = null
+      emit('changed')
+    },
+  )
 }
 
 // ── SEARCH ──
@@ -136,9 +171,11 @@ function statusClass(c: Contact): string {
 // ── DELETE ──
 const deletingId = ref<string | null>(null)
 
-async function deleteContact(c: Contact) {
-  if (!confirm(`Delete ${c.name} from the contact book? This can't be undone.`)) return
+function deleteContact(c: Contact) {
+  askConfirm('Delete contact?', `Delete ${c.name} from the contact book? This can't be undone.`, () => doDeleteContact(c))
+}
 
+async function doDeleteContact(c: Contact) {
   deletingId.value = c.id
   const { error } = await supabase.from('pay_later_customers').delete().eq('id', c.id)
   deletingId.value = null
@@ -305,6 +342,25 @@ function close() {
     :isLight="isLight"
     :customer="editingContact"
     @saved="onEditSaved"
+  />
+
+  <PromptModal
+    v-model="showRename"
+    :isLight="isLight"
+    title="Rename tag"
+    label="Tag name"
+    :initialValue="renameTarget?.name"
+    @submit="onRenameSubmit"
+  />
+
+  <ConfirmModal
+    v-model="showConfirm"
+    :isLight="isLight"
+    :title="confirmTitle"
+    :message="confirmMessage"
+    :confirmText="confirmText"
+    danger
+    @confirm="runPendingAction"
   />
 
   <Toast :message="toastMsg" :show="showToast" />

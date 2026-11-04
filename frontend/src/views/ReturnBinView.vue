@@ -11,6 +11,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
 import Toast from '../components/Toast.vue'
 import ConfirmModal from '../components/ConfirmModal.vue'
@@ -234,7 +235,20 @@ function showMsg(msg: string) {
   setTimeout(() => { toastVisible.value = false }, 2800)
 }
 
-onMounted(fetchReturns)
+// Coming from Today's Business with ?invoice=... → open the Add Return pop-up for that sale
+const route  = useRoute()
+const router = useRouter()
+const presetInvoice = ref('')
+
+onMounted(() => {
+  fetchReturns()
+  const inv = route.query.invoice
+  if (typeof inv === 'string' && inv) {
+    presetInvoice.value = inv
+    showAddModal.value  = true
+    router.replace({ name: 'return-bin' }) // clear the link so a refresh doesn't reopen it
+  }
+})
 </script>
 
 <template>
@@ -332,7 +346,7 @@ onMounted(fetchReturns)
 
     </main>
 
-    <AddReturnModal v-model="showAddModal" :isLight="isLight" @saved="onAddSaved" />
+    <AddReturnModal v-model="showAddModal" :isLight="isLight" :presetInvoice="presetInvoice" @saved="onAddSaved" />
 
     <ConfirmModal
       v-model="showConfirm"

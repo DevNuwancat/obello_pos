@@ -13,8 +13,9 @@
 // 1. IMPORTS
 // ──────────────────────────────────────────────
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import Slidebar from '../components/Slidebar.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
 import { whatsappLink } from '../lib/phone'
@@ -613,11 +614,35 @@ function onCustomerAdded() {
 // ──────────────────────────────────────────────
 // 10b. DELETE CUSTOMER — for settled accounts, once paid off in person
 // ──────────────────────────────────────────────
+// ── CONFIRM MODAL — replaces the native browser confirm() popup ──
+const showConfirm      = ref(false)
+const confirmTitle     = ref('')
+const confirmMessage   = ref('')
+const confirmText      = ref('Confirm')
+const confirmIsDanger  = ref(true)
+const pendingAction    = ref<(() => void) | null>(null)
+
+function askConfirm(title: string, message: string, text: string, action: () => void, danger = true) {
+  confirmTitle.value    = title
+  confirmMessage.value  = message
+  confirmText.value     = text
+  confirmIsDanger.value = danger
+  pendingAction.value   = action
+  showConfirm.value     = true
+}
+
+function runPendingAction() {
+  pendingAction.value?.()
+  pendingAction.value = null
+}
+
 const deletingCustomerId = ref<string | null>(null)
 
-async function deleteCustomer(c: CustomerBalance) {
-  if (!confirm(`Delete ${c.name}'s Pay Later account? This can't be undone.`)) return
+function deleteCustomer(c: CustomerBalance) {
+  askConfirm('Delete account?', `Delete ${c.name}'s Pay Later account? This can't be undone.`, 'Delete', () => doDeleteCustomer(c))
+}
 
+async function doDeleteCustomer(c: CustomerBalance) {
   deletingCustomerId.value = c.id
   const { error } = await supabase.from('pay_later_customers').delete().eq('id', c.id)
   deletingCustomerId.value = null
@@ -868,6 +893,12 @@ function showToastMsg(msg: string) {
 // 14. INIT
 // ──────────────────────────────────────────────
 const route = useRoute()
+const router = useRouter()
+
+// Jump to the Return Bin with this bill's invoice already filled in
+function goToReturn(bill: CustomerBill) {
+  router.push({ name: 'return-bin', query: { invoice: bill.invoice_no } })
+}
 
 onMounted(async () => {
   loadTags()
@@ -894,6 +925,15 @@ onMounted(async () => {
 
     <!-- ── SIDEBAR ── -->
     <Slidebar v-model:isLight="isLight" />
+    <ConfirmModal
+      v-model="showConfirm"
+      :isLight="isLight"
+      :title="confirmTitle"
+      :message="confirmMessage"
+      :confirmText="confirmText"
+      :danger="confirmIsDanger"
+      @confirm="runPendingAction"
+    />
 
     <main class="main">
 
@@ -1119,6 +1159,10 @@ onMounted(async () => {
                             <span class="bill-date">{{ fmtDate(bill.created_at) }}</span>
                             <span class="alloc-badge alloc-pushed" :class="allocClass(bill.id)">{{ allocLabel(bill.id) }}</span>
                             <span class="bill-total">{{ fmtRs(bill.total) }}</span>
+                            <button v-if="auth.isAdmin || auth.isManager" class="btn-bill-return" title="Return items from this bill" @click.stop="goToReturn(bill)">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                              Return
+                            </button>
                           </div>
                           <div
                             v-for="item in (itemsByBill.get(bill.id) ?? [])"
@@ -1527,6 +1571,8 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 .bill-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .bill-invoice { font-family: 'DM Mono', monospace; font-size: 11.5px; font-weight: 600; color: var(--text); }
 .bill-date { font-size: 11px; color: var(--text-muted); }
+.btn-bill-return { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text-sub, var(--text-muted)); font-size: 11.5px; font-weight: 600; font-family: inherit; cursor: pointer; transition: background .15s, color .15s; }
+.btn-bill-return:hover { background: var(--surface-hover, var(--border)); color: var(--text); }
 .bill-total { margin-left: auto; font-size: 12.5px; font-weight: 700; color: var(--text); font-family: 'DM Mono', monospace; }
 
 .expand-item { display: flex; align-items: center; gap: 10px; padding: 5px 0; }

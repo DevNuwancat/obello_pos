@@ -16,6 +16,7 @@
 import { ref, computed } from 'vue'
 import JsBarcode from 'jsbarcode'
 import Slidebar from '../components/Slidebar.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import Toast from '../components/Toast.vue'
 import { useBarcodePrintStore } from '../store/barcodePrint'
 import obelloLogo from '../assets/obello_mini.png'
@@ -58,23 +59,47 @@ function toggleKeep(id: string, value: boolean) {
 
 const keptCount = computed(() => store.queue.filter((i) => i.keep).length)
 
+// ── CONFIRM MODAL — replaces the native browser confirm() popup ──
+const showConfirm      = ref(false)
+const confirmTitle     = ref('')
+const confirmMessage   = ref('')
+const confirmText      = ref('Confirm')
+const confirmIsDanger  = ref(true)
+const pendingAction    = ref<(() => void) | null>(null)
+
+function askConfirm(title: string, message: string, text: string, action: () => void, danger = true) {
+  confirmTitle.value    = title
+  confirmMessage.value  = message
+  confirmText.value     = text
+  confirmIsDanger.value = danger
+  pendingAction.value   = action
+  showConfirm.value     = true
+}
+
+function runPendingAction() {
+  pendingAction.value?.()
+  pendingAction.value = null
+}
+
 // "Clear All" — wipes everything EXCEPT items the user ticked "Keep" on
 function clearAll() {
   if (store.queue.length === 0) return
   const msg = keptCount.value > 0
     ? `Clear the print queue? ${keptCount.value} kept item(s) will stay. This cannot be undone.`
     : 'Clear the entire barcode print queue? This cannot be undone.'
-  if (!confirm(msg)) return
-  store.clearQueue(false)
-  showToastMsg(keptCount.value > 0 ? 'Print queue cleared (kept items stayed)' : 'Print queue cleared')
+  askConfirm('Clear print queue?', msg, 'Clear', () => {
+    store.clearQueue(false)
+    showToastMsg(keptCount.value > 0 ? 'Print queue cleared (kept items stayed)' : 'Print queue cleared')
+  })
 }
 
 // "Clear All (Incl. Kept)" — ignores the keep flag and wipes literally everything
 function clearAllIncludingKept() {
   if (store.queue.length === 0) return
-  if (!confirm('Clear the ENTIRE print queue, including kept items? This cannot be undone.')) return
-  store.clearQueue(true)
-  showToastMsg('Print queue fully cleared')
+  askConfirm('Clear everything?', 'Clear the ENTIRE print queue, including kept items? This cannot be undone.', 'Clear all', () => {
+    store.clearQueue(true)
+    showToastMsg('Print queue fully cleared')
+  })
 }
 
 
@@ -200,6 +225,15 @@ function showToastMsg(msg: string) {
 
     <!-- ── SIDEBAR ── -->
     <Slidebar v-model:isLight="isLight" />
+    <ConfirmModal
+      v-model="showConfirm"
+      :isLight="isLight"
+      :title="confirmTitle"
+      :message="confirmMessage"
+      :confirmText="confirmText"
+      :danger="confirmIsDanger"
+      @confirm="runPendingAction"
+    />
 
     <!-- ══════════════════════════════════════ -->
     <!--              MAIN CONTENT             -->

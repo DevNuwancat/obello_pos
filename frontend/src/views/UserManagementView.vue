@@ -7,6 +7,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import Slidebar from '../components/Slidebar.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import CreateUserModal from '../components/modals/CreateUserModal.vue'
 import Toast from '../components/Toast.vue'
 import { supabase } from '../lib/supabase'
@@ -65,13 +66,44 @@ function onUserCreated() {
 // ── DEACTIVATE / RESTORE ──
 // We never hard-delete a user — old sales still reference their id — so
 // "removing" someone just flips is_active off (they can no longer log in).
+// ── CONFIRM MODAL — replaces the native browser confirm() popup ──
+const showConfirm      = ref(false)
+const confirmTitle     = ref('')
+const confirmMessage   = ref('')
+const confirmText      = ref('Confirm')
+const confirmIsDanger  = ref(true)
+const pendingAction    = ref<(() => void) | null>(null)
+
+function askConfirm(title: string, message: string, text: string, action: () => void, danger = true) {
+  confirmTitle.value    = title
+  confirmMessage.value  = message
+  confirmText.value     = text
+  confirmIsDanger.value = danger
+  pendingAction.value   = action
+  showConfirm.value     = true
+}
+
+function runPendingAction() {
+  pendingAction.value?.()
+  pendingAction.value = null
+}
+
 const changingId = ref<string | null>(null)
 
-async function toggleActive(u: UserRow) {
+function toggleActive(u: UserRow) {
   const goingActive = !u.is_active
   const verb = goingActive ? 'restore' : 'deactivate'
-  if (!confirm(`Are you sure you want to ${verb} ${u.full_name || u.email}?`)) return
+  askConfirm(
+    goingActive ? 'Restore user?' : 'Deactivate user?',
+    `Are you sure you want to ${verb} ${u.full_name || u.email}?`,
+    goingActive ? 'Restore' : 'Deactivate',
+    () => doToggleActive(u),
+    !goingActive,   // red button only when switching someone off
+  )
+}
 
+async function doToggleActive(u: UserRow) {
+  const goingActive = !u.is_active
   changingId.value = u.id
   try {
     const { data, error } = await supabase.functions.invoke('set-user-active', {
@@ -111,6 +143,15 @@ onMounted(fetchUsers)
 <template>
   <div class="page-wrap" :class="{ light: isLight }">
     <Slidebar v-model:isLight="isLight" />
+    <ConfirmModal
+      v-model="showConfirm"
+      :isLight="isLight"
+      :title="confirmTitle"
+      :message="confirmMessage"
+      :confirmText="confirmText"
+      :danger="confirmIsDanger"
+      @confirm="runPendingAction"
+    />
 
     <main class="main">
       <div class="page-header">

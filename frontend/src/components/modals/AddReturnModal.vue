@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { supabase } from '../../lib/supabase'
 import Toast from '../Toast.vue'
 
-const props = defineProps<{ modelValue: boolean; isLight: boolean }>()
+const props = defineProps<{ modelValue: boolean; isLight: boolean; presetInvoice?: string }>()
 const emit  = defineEmits<{
   (e: 'update:modelValue', val: boolean): void
   (e: 'saved'): void
@@ -199,8 +199,14 @@ async function save() {
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 
 watch(() => props.modelValue, (isOpen) => {
-  if (isOpen) window.addEventListener('keydown', onKey)
-  else        window.removeEventListener('keydown', onKey)
+  if (isOpen) {
+    window.addEventListener('keydown', onKey)
+    // Opened from a sale in Today's Business → fill the invoice and look it up straight away
+    if (props.presetInvoice) {
+      invoiceQuery.value = props.presetInvoice
+      searchInvoice()
+    }
+  } else        window.removeEventListener('keydown', onKey)
 })
 
 function close() {

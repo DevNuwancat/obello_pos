@@ -642,6 +642,11 @@ const auth = useAuthStore()
 const router = useRouter()
 
 // Jump to the Pay Later page, already opened on this customer
+// Jump to the Return Bin with this sale's invoice already filled in
+function goToReturn(t: Transaction) {
+  router.push({ name: 'return-bin', query: { invoice: t.invoice_no } })
+}
+
 function goToPayLaterCustomer(customerId: string) {
   router.push({ name: 'pay-later', query: { customer: customerId } })
 }
@@ -1932,6 +1937,11 @@ onMounted(() => {
                         >
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                           {{ printingId === t.id ? 'Printing…' : 'Print' }}
+                        </button>
+                        <!-- Start a return for this sale: admins and managers only (same as the Return Bin page) -->
+                        <button v-if="auth.isAdmin || auth.isManager" class="btn-reprint" @click="goToReturn(t)">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                          Return
                         </button>
                         <!-- Cancel sale: admins and managers only -->
                         <button v-if="auth.isAdmin || auth.isManager" class="btn-cancel-sale" @click="openVoidModal(t)">
