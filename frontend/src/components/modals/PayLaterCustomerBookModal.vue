@@ -285,7 +285,7 @@ function close() {
 
         <!-- TAG FILTER -->
         <div v-if="tags.length" class="tag-filter-row">
-          <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="contacts.length" :noTagCount="untaggedCount" />
+          <TagFilter v-model="tagFilter" compact :options="tagOptions" :allCount="contacts.length" :noTagCount="untaggedCount" />
         </div>
 
         <!-- BODY -->
@@ -452,7 +452,7 @@ function close() {
 .wa-chip { margin-left: 6px; padding: 0 7px; border-radius: 999px; background: rgba(37,211,102,.14); color: #25D366; font-size: 10px; font-weight: 600; }
 .cust-nick { font-weight: 400; font-style: italic; color: var(--text-sub); font-size: 12px; }
 .cust-tags { margin: 3px 0 2px; }
-.tag-filter-row { padding: 12px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; max-height: 120px; overflow-y: auto; }
+.tag-filter-row { padding: 10px 24px; border-bottom: 1px solid var(--border); flex-shrink: 0; max-height: 84px; overflow-y: auto; }
 .manage-btn {
   display: inline-flex; align-items: center; gap: 6px; padding: 8px 13px; border-radius: 9px; cursor: pointer;
   border: 1px solid var(--border-mid); background: var(--bg-card); color: var(--text-sub);

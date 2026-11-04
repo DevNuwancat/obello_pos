@@ -20,6 +20,7 @@ defineProps<{
   options: TagFilterOption[]
   allCount: number
   noTagCount?: number
+  compact?: boolean   // smaller pills, for tight spaces like the Customer Book
 }>()
 const selected = defineModel<string | null>({ default: null })
 
@@ -29,7 +30,7 @@ function pick(id: string | null) {
 </script>
 
 <template>
-  <div class="tf">
+  <div class="tf" :class="{ compact }">
     <button class="tf-pill" :class="{ active: selected === null }" @click="selected = null">
       All <span class="tf-count">{{ allCount }}</span>
     </button>
@@ -43,7 +44,7 @@ function pick(id: string | null) {
     >
       <span class="tf-dot"></span>
       <span class="tf-text">
-        <span class="tf-name">{{ o.name }} <span class="tf-count">{{ o.count }}</span></span>
+        <span class="tf-name"><span class="tf-name-text">{{ o.name }}</span> <span class="tf-count">{{ o.count }}</span></span>
         <span v-if="o.sub" class="tf-sub">{{ o.sub }}</span>
       </span>
     </button>
@@ -100,4 +101,14 @@ function pick(id: string | null) {
 .tf-sub { font-size: 10.5px; opacity: .75; font-family: 'DM Mono', monospace; letter-spacing: 0; }
 .tf-count { font-size: 11px; font-weight: 500; opacity: .6; margin-left: 3px; font-variant-numeric: tabular-nums; }
 .tf-none { border-style: dashed; }
+
+/* Compact size: smaller text, tighter padding, long names get "…" instead of wrapping */
+.tf.compact { gap: 6px; }
+.tf.compact .tf-pill { gap: 6px; padding: 3px 10px; font-size: 11.5px; box-shadow: inset 0 1px 0 rgba(255,255,255,.12); }
+.tf.compact .tf-dot { width: 6px; height: 6px; }
+.tf.compact .tf-count { font-size: 10px; margin-left: 2px; }
+.tf.compact .tf-text { line-height: 1.2; }
+.tf.compact .tf-sub { font-size: 9.5px; opacity: .7; }
+.tf.compact .tf-name { display: flex; align-items: baseline; gap: 4px; }
+.tf.compact .tf-name-text { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

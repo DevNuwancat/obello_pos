@@ -1023,7 +1023,7 @@ onMounted(async () => {
 
       <!-- ── TAG FILTER (location / organization) + debt summary for the chosen tag ── -->
       <div v-if="tags.length" class="tag-bar">
-        <TagFilter v-model="tagFilter" :options="tagOptions" :allCount="creditCustomers.length" :noTagCount="untaggedCount" />
+        <TagFilter v-model="tagFilter" compact :options="tagOptions" :allCount="creditCustomers.length" :noTagCount="untaggedCount" />
         <div v-if="tagSummary" class="tag-summary">
           <strong>{{ tagSummary.name }}</strong>
           <span>{{ tagSummary.customers }} customer{{ tagSummary.customers === 1 ? '' : 's' }} · {{ tagSummary.pending }} still owe</span>
