@@ -298,11 +298,7 @@ function showToast(msg: string) {
 // ── CART ACTIONS ──
 // Stock is the ceiling — cart qty can never exceed what's actually in the products table
 function addToCart(product: Product) {
-  // Gift items can only be given as a free gift (once the bill is big enough)
-  if (giftProductIds.value.has(product.id)) {
-    showToast(`${product.name} is a free-gift item — add it from the Free Gift box`)
-    return
-  }
+  // Gift items are normal products too: they can be sold as usual, or given free from the Free Gift box
   const existing = cart.value.find(i => i.id === product.id)
   if (existing) {
     // Held items are already out of stock, so they raise the ceiling for their line
