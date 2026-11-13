@@ -1,7 +1,7 @@
 <!--
   ╔═══════════════════════════════════════════════════════════════════╗
   ║  FreeGiftsView.vue — free gifts for big bills                      ║
-  ║  A bill of "min amount" or more earns ONE free gift.               ║
+  ║  Every "min amount" in a bill earns ONE free gift.                  ║
   ║  Tab 1: gifts given (who, which invoice, released or pending)      ║
   ║  Tab 2: Pay Later bills that earned a gift but have none yet       ║
   ║  Tab 3: settings (minimum amount) + the list of gift items         ║
@@ -58,6 +58,7 @@ interface EligibleBill {
   total: number
   created_at: string
   customer_id: string | null
+  gifts_left: number   // how many gifts this bill still has to receive
 }
 
 // ──────────────────────────────────────────────
@@ -151,8 +152,13 @@ async function fetchAll(quiet = false) {
       .not('customer_id', 'is', null)
       .order('created_at', { ascending: false })
     if (billError) { fetchError.value = billError.message; markError(); return }
-    const haveGift = new Set(gifts.value.map(g => g.transaction_id))
-    eligible.value = ((billData ?? []) as EligibleBill[]).filter(b => !haveGift.has(b.id))
+    // Each full "minimum amount" earns one gift (floor: 14,999 / 5,000 = 2). Count the gifts a
+    // bill already has; the bill stays on this list until it has received all it earned.
+    const givenCount = new Map<string, number>()
+    for (const g of gifts.value) givenCount.set(g.transaction_id, (givenCount.get(g.transaction_id) ?? 0) + 1)
+    eligible.value = ((billData ?? []) as Omit<EligibleBill, 'gifts_left'>[])
+      .map(b => ({ ...b, gifts_left: Math.floor(Number(b.total) / minAmount.value) - (givenCount.get(b.id) ?? 0) }))
+      .filter(b => b.gifts_left > 0)
 
     // Names + what each Pay Later customer still owes
     const ids = [...new Set([
@@ -296,7 +302,7 @@ async function giveGift(item: GiftItem) {
   giveBusy.value = false
   if (error) { giveError.value = error.message; return }
   giveTarget.value = null
-  toast('Gift added to ' + b.invoice_no)
+  toast('Gift added to ' + b.invoice_no + (b.gifts_left > 1 ? ` · ${b.gifts_left - 1} more to give` : ''))
   fetchAll()
 }
 
@@ -368,7 +374,7 @@ async function removeGiftItem(item: GiftItem) {
 
       <div class="page-header">
         <h1 class="page-title">Free Gifts</h1>
-        <p class="page-sub">A bill of {{ fmtRs(minAmount) }} or more earns one free gift · who got it, what it cost, and what is still to hand over</p>
+        <p class="page-sub">Every {{ fmtRs(minAmount) }} in a bill earns one free gift ({{ fmtRs(minAmount * 2) }} = 2 gifts) · who got it, what it cost, and what is still to hand over</p>
       </div>
 
       <!-- ── STATS ── -->
@@ -396,7 +402,7 @@ async function removeGiftItem(item: GiftItem) {
         <div class="stat-card">
           <div class="stat-label">Waiting for a Gift</div>
           <div class="stat-value">{{ periodEligible.length }}</div>
-          <div class="stat-sub">single Pay Later bills ≥ {{ fmtRs(minAmount) }}, no gift yet</div>
+          <div class="stat-sub">single Pay Later bills ≥ {{ fmtRs(minAmount) }}, gifts still to give</div>
         </div>
       </div>
 
@@ -515,7 +521,7 @@ async function removeGiftItem(item: GiftItem) {
 
         <!-- TAB 2: Pay Later bills with no gift yet -->
         <div v-else-if="activeTab === 'eligible'">
-        <div class="rule-note">One bill of {{ fmtRs(minAmount) }} or more earns one gift. A customer's separate bills are never added together.</div>
+        <div class="rule-note">Every {{ fmtRs(minAmount) }} in ONE bill earns one gift ({{ fmtRs(minAmount * 2) }} = 2, {{ fmtRs(minAmount * 3) }} = 3). A customer's separate bills are never added together.</div>
         <table>
           <thead>
             <tr>
@@ -524,13 +530,14 @@ async function removeGiftItem(item: GiftItem) {
               <th>Invoice</th>
               <th>Customer</th>
               <th style="text-align:right">Bill</th>
+              <th style="text-align:right">Gifts to Give</th>
               <th style="text-align:right">Customer Owes</th>
               <th style="text-align:right; padding-right:20px;">Action</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="shownEligible.length === 0">
-              <td colspan="7" class="empty-row">Every big Pay Later bill already has its gift</td>
+              <td colspan="8" class="empty-row">Every big Pay Later bill already has its gifts</td>
             </tr>
             <tr v-for="(b, i) in shownEligible" :key="b.id">
               <td>{{ i + 1 }}</td>
@@ -538,6 +545,7 @@ async function removeGiftItem(item: GiftItem) {
               <td class="name-cell mono">{{ b.invoice_no }}</td>
               <td class="name-cell">{{ (b.customer_id && customerName.get(b.customer_id)) || '—' }}</td>
               <td class="price-cell" style="text-align:right">{{ fmtRs(b.total) }}</td>
+              <td class="price-cell" style="text-align:right">{{ b.gifts_left }}</td>
               <td class="price-cell" style="text-align:right">
                 <span :class="(customerOwed.get(b.customer_id ?? '') ?? 0) > 0 ? 'owe' : 'settled'">
                   {{ (customerOwed.get(b.customer_id ?? '') ?? 0) > 0 ? fmtRs(customerOwed.get(b.customer_id ?? '') ?? 0) : 'Paid' }}
@@ -558,7 +566,7 @@ async function removeGiftItem(item: GiftItem) {
 
             <div class="set-block">
               <div class="set-label">Minimum bill amount</div>
-              <div class="set-sub">One bill of this amount or more (after discount) can take one free gift.</div>
+              <div class="set-sub">Every full amount in one bill (after discount) earns one free gift. Example: Rs. 5,000 minimum → Rs. 10,000 = 2 gifts, Rs. 15,000 = 3 gifts.</div>
               <div class="set-row">
                 <input v-model.number="minInput" type="number" min="1" class="set-input" />
                 <button class="btn btn-primary" :disabled="savingMin" @click="saveMin">{{ savingMin ? 'Saving…' : 'Save' }}</button>

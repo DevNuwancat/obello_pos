@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<!--
+  OBELLO INVOICE DESIGN
+  ---------------------
+  This is the design of the invoice (the bill saved as PDF).
+  It uses sample data only. Open this file in a browser to see it.
+
+  To change the look later, edit the colours / sizes in the ":root" part below,
+  or tell Claude what to change.
+
+  Sample words like "Sample Product A" are placeholders. The real app will
+  replace them with the real sale details.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obello Invoice</title>
+<style>
+  /* ── SETTINGS: change these to restyle the whole invoice ── */
+  :root {
+    --ink:   #111111;   /* main text colour */
+    --muted: #777777;   /* small grey labels */
+    --line:  #e3e3e3;   /* thin lines */
+    --gift:  #6d3fd6;   /* free gift colour */
+    --font:  -apple-system, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f0f0f0; font-family: var(--font); color: var(--ink); }
+
+  /* The paper: A4 size (210mm wide) */
+  .page {
+    width: 210mm; min-height: 297mm; margin: 24px auto; background: #fff;
+    padding: 18mm 18mm 14mm; display: flex; flex-direction: column;
+  }
+
+  /* Top: logo on the left, "INVOICE" on the right */
+  .top { display: flex; justify-content: space-between; align-items: flex-start; }
+  .logo { height: 46px; }
+  .title { text-align: right; }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 300; letter-spacing: .3em; }
+  .title span { font-size: 12px; color: var(--muted); }
+
+  /* Invoice details (date, payment, cashier) */
+  .meta { display: flex; gap: 40px; margin: 34px 0 30px; font-size: 12.5px; }
+  .meta small { display: block; color: var(--muted); font-size: 10px; letter-spacing: .12em;
+                text-transform: uppercase; margin-bottom: 4px; }
+
+  /* Items table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 500; font-size: 10px; letter-spacing: .12em;
+       text-transform: uppercase; color: var(--muted); padding: 0 0 8px; border-bottom: 1px solid var(--ink); }
+  td { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .r { text-align: right; }
+  .sku { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+  .gift td { color: var(--gift); }
+
+  /* Totals (right side) */
+  .totals { width: 70mm; margin: 22px 0 0 auto; font-size: 13px; }
+  .totals div { display: flex; justify-content: space-between; padding: 5px 0; }
+  .totals .muted { color: var(--muted); }
+  .totals .grand { border-top: 1px solid var(--ink); margin-top: 6px; padding-top: 10px;
+                   font-size: 17px; font-weight: 600; }
+
+  /* Bottom thank-you line (pushed to the bottom of the page) */
+  .foot { margin-top: auto; padding-top: 30px; border-top: 1px solid var(--line);
+          font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; }
+
+  /* When saving as PDF: remove the grey background and page margin */
+  @media print {
+    body { background: #fff; }
+    .page { margin: 0; box-shadow: none; }
+    @page { size: A4; margin: 0; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+
+    <div class="top">
+      <img class="logo" src="obello_mini.png" alt="Obello">
+      <div class="title">
+        <h1>INVOICE</h1>
+        <span>INV-000482</span>
+      </div>
+    </div>
+
+    <div class="meta">
+      <div><small>Date</small>6 Nov 2026</div>
+      <div><small>Time</small>4:32 PM</div>
+      <div><small>Payment</small>Cash</div>
+      <div><small>Cashier</small>Shashika</div>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>Item</th><th class="r">Qty</th><th class="r">Price</th><th class="r">Amount</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Sample Product A<span class="sku">SKU-1001</span></td><td class="r">2</td><td class="r">1,800.00</td><td class="r">3,600.00</td></tr>
+        <tr><td>Sample Product B<span class="sku">SKU-1002</span></td><td class="r">1</td><td class="r">2,450.00</td><td class="r">2,450.00</td></tr>
+        <tr><td>Sample Product C<span class="sku">SKU-1003</span></td><td class="r">3</td><td class="r">350.00</td><td class="r">1,050.00</td></tr>
+        <tr class="gift"><td>Sample Gift Item (Free Gift)<span class="sku">SKU-9001</span></td><td class="r">1</td><td class="r">–</td><td class="r">0.00</td></tr>
+      </tbody>
+    </table>
+
+    <div class="totals">
+      <div class="muted"><span>Subtotal</span><span>Rs. 7,100.00</span></div>
+      <div class="muted"><span>Discount</span><span>– Rs. 100.00</span></div>
+      <div class="grand"><span>Total</span><span>Rs. 7,000.00</span></div>
+      <div class="muted"><span>Paid (Cash)</span><span>Rs. 7,500.00</span></div>
+      <div class="muted"><span>Balance</span><span>Rs. 500.00</span></div>
+    </div>
+
+    <div class="foot">
+      <span>Thank you, come again.</span>
+      <span>obello</span>
+    </div>
+
+  </div>
+</body>
+</html>

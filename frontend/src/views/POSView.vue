@@ -211,12 +211,14 @@ watch(total, (newTotal) => {
 })
 
 // ── FREE GIFT ──
-// A bill of "giftMinAmount" or more earns ONE free gift. The gift is NOT a normal cart line:
-// it sits in "selectedGift", costs the customer Rs. 0, and is saved after the sale by the
-// database function give_free_gift (which also takes 1 off the stock and records the cost).
+// Every full "giftMinAmount" in the bill earns ONE free gift:
+//   minimum 5,000 → 5,000 = 1 gift, 10,000 = 2 gifts, 15,000 = 3 gifts (9,999 is still 1).
+// Gifts are NOT normal cart lines: they sit in "selectedGifts", cost the customer Rs. 0, and are
+// saved after the sale by the database function give_free_gift (called once per gift; it also
+// takes 1 off the stock and records the cost).
 const giftMinAmount  = ref(5000)
 const giftProductIds = ref(new Set<string>())
-const selectedGift   = ref<Product | null>(null)
+const selectedGifts  = ref<Product[]>([])
 const showGiftPicker = ref(false)
 const giftSearch     = ref('')
 
@@ -242,15 +244,18 @@ function reloadGiftConfigWhenVisible() {
 onMounted(() => document.addEventListener('visibilitychange', reloadGiftConfigWhenVisible))
 onUnmounted(() => document.removeEventListener('visibilitychange', reloadGiftConfigWhenVisible))
 
-// Gifts only go with real sales (not holds or loans) and only once the bill is big enough
-const giftEligible = computed(() =>
-  giftProductIds.value.size > 0 &&
-  cart.value.length > 0 &&
-  !['Customer Hold', 'Credit Loan'].includes(payMethod.value) &&
-  total.value >= giftMinAmount.value
-)
-// How much more the customer must spend to earn the gift (for the little hint)
-const giftShortBy = computed(() => giftMinAmount.value - total.value)
+// How many gifts this bill has earned. Gifts only go with real sales (not holds or loans).
+// Math.floor drops the leftover: 14,999 / 5,000 = 2.99 → 2 gifts.
+const giftsEarned = computed(() => {
+  if (giftProductIds.value.size === 0 || cart.value.length === 0) return 0
+  if (['Customer Hold', 'Credit Loan'].includes(payMethod.value)) return 0
+  if (giftMinAmount.value <= 0) return 0
+  return Math.floor(total.value / giftMinAmount.value)
+})
+// How many gifts the cashier can still choose
+const giftsLeft = computed(() => giftsEarned.value - selectedGifts.value.length)
+// How much more the customer must spend to earn the NEXT gift (for the little hint)
+const giftShortBy = computed(() => (giftsEarned.value + 1) * giftMinAmount.value - total.value)
 
 const giftChoices = computed(() => {
   const q = giftSearch.value.trim().toLowerCase()
@@ -264,11 +269,23 @@ function openGiftPicker() {
   showGiftPicker.value = true
 }
 
+// How many of this product are already chosen as gifts on this bill
+function giftsOfProduct(id: string) {
+  return selectedGifts.value.filter(g => g.id === id).length
+}
+
 function pickGift(product: Product) {
-  if (product.stock <= 0) { showToast(`${product.name} is out of stock`); return }
-  selectedGift.value = product
-  showGiftPicker.value = false
+  if (giftsLeft.value <= 0) { showToast('No more gifts to choose on this bill'); return }
+  // The same gift can be chosen twice, but only as many as the stock allows
+  if (product.stock - giftsOfProduct(product.id) <= 0) { showToast(`${product.name} is out of stock`); return }
+  selectedGifts.value.push(product)
   showToast(`Free gift: ${product.name}`)
+  // Close the box once every earned gift is chosen
+  if (giftsLeft.value <= 0) showGiftPicker.value = false
+}
+
+function removeGift(index: number) {
+  selectedGifts.value.splice(index, 1)
 }
 
 // Scanner support inside the picker: Enter picks the one matching item
@@ -276,12 +293,14 @@ function pickGiftFromSearch() {
   if (giftChoices.value.length === 1) pickGift(giftChoices.value[0])
 }
 
-// If the total drops below the amount (items removed, bigger discount, ...) the gift is no longer earned
-watch(giftEligible, (ok) => {
-  if (!ok && selectedGift.value) {
-    selectedGift.value = null
-    showGiftPicker.value = false
-    showToast('Free gift removed — the bill is below Rs. ' + giftMinAmount.value.toLocaleString('en-LK'))
+// If the total drops (items removed, bigger discount, ...) the bill may earn fewer gifts:
+// keep the first ones chosen, drop the extra ones.
+watch(giftsEarned, (earned) => {
+  if (selectedGifts.value.length > earned) {
+    const removed = selectedGifts.value.length - earned
+    selectedGifts.value.splice(earned)
+    if (earned === 0) showGiftPicker.value = false
+    showToast(`${removed} free gift${removed > 1 ? 's' : ''} removed — the bill is now Rs. ${total.value.toLocaleString('en-LK')}`)
   }
 })
 
@@ -354,7 +373,7 @@ function removeItem(id: string) {
 // "Clear" just empties the cart — held lines stay reserved on the hold (nothing is restocked)
 function clearCart() {
   cart.value = []
-  selectedGift.value = null
+  selectedGifts.value = []
 }
 
 // ── CUSTOMER HOLDS ──
@@ -715,20 +734,20 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
       if (loyalError) showToast('⚠️ Sale saved, but the customer record failed: ' + loyalError.message)
     }
 
-    // 3d. Free gift: one database call adds it to this bill, takes 1 off the stock and saves the cost.
+    // 3d. Free gifts: one database call per gift adds it to this bill, takes 1 off the stock and saves the cost.
     //     Cash / Card / Bank hand it over now; Later Pay keeps it "pending" until someone releases it.
     //     A failure here never undoes the sale, it only warns.
-    const giftForBill = selectedGift.value
-    if (giftForBill) {
+    const giftsForBill = [...selectedGifts.value]
+    for (const gift of giftsForBill) {
       const { error: giftError } = await supabase.rpc('give_free_gift', {
         p_transaction_id: txn.id,
-        p_product_id: giftForBill.id,
+        p_product_id: gift.id,
         p_release_now: payMethod.value !== 'Later Pay',
       })
       if (giftError) {
-        showToast('⚠️ Sale saved, but the free gift failed: ' + giftError.message)
+        showToast('⚠️ Sale saved, but a free gift failed: ' + giftError.message)
       } else {
-        const gp = PRODUCTS.value.find(p => p.id === giftForBill.id)
+        const gp = PRODUCTS.value.find(p => p.id === gift.id)
         if (gp) gp.stock = Math.max(0, gp.stock - 1)
       }
     }
@@ -750,7 +769,7 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
                 quantity: i.qty,
                 unit_price: i.unit_price,
               })),
-              ...(giftForBill ? [{ product_name: 'FREE GIFT - ' + giftForBill.name, quantity: 1, unit_price: 0 }] : []),
+              ...giftsForBill.map(g => ({ product_name: 'FREE GIFT - ' + g.name, quantity: 1, unit_price: 0 })),
             ],
             payment_method: paymentMethodCode(payMethod.value),
             subtotal: subtotal.value,
@@ -785,7 +804,7 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
   showToast('Order completed · ' + payMethod.value)
   setTimeout(() => {
     cart.value     = []
-    selectedGift.value = null
+    selectedGifts.value = []
     discount.value = 0
     amountPaid.value = 0
     payMethod.value = 'Cash'
@@ -941,31 +960,30 @@ onMounted(async () => {
             </button>
           </div>
 
-          <!-- Free gift: chosen gift row / "choose" button / hint -->
-          <div v-if="selectedGift" class="gift-row">
+          <!-- Free gifts: chosen gift rows, then a "choose" button (or a hint) -->
+          <div v-for="(g, gi) in selectedGifts" :key="gi" class="gift-row">
             <div class="cart-img-wrap"
-              @mouseenter="(e) => showImgPreview(e, selectedGift)"
+              @mouseenter="(e) => showImgPreview(e, g)"
               @mouseleave="hideImgPreview"
             >
-              <ProductThumb :src="selectedGift.image_url" :size="44" />
+              <ProductThumb :src="g.image_url" :size="44" />
             </div>
             <div class="gift-info">
-              <div class="cart-name">{{ selectedGift.name }}</div>
-              <div class="cart-sku">{{ selectedGift.sku }}</div>
+              <div class="cart-name">{{ g.name }}</div>
+              <div class="cart-sku">{{ g.sku }}</div>
             </div>
-            <span class="gift-tag">FREE GIFT</span>
+            <span class="gift-tag">FREE GIFT {{ giftsEarned > 1 ? (gi + 1) + '/' + giftsEarned : '' }}</span>
             <div class="gift-price">{{ fmt(0) }}</div>
-            <button class="gift-change" @click="openGiftPicker">Change</button>
-            <button class="remove-btn" @click="selectedGift = null">
+            <button class="remove-btn" @click="removeGift(gi)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
           </div>
-          <button v-else-if="giftEligible" class="gift-offer" @click="openGiftPicker">
+          <button v-if="giftsLeft > 0" class="gift-offer" @click="openGiftPicker">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
-            <span>This bill gets a <b>free gift</b> — tap to choose</span>
+            <span>This bill gets <b>{{ giftsLeft }} free gift{{ giftsLeft > 1 ? 's' : '' }}</b> to choose — tap to choose</span>
           </button>
-          <div v-else-if="giftProductIds.size > 0 && cart.length > 0 && !['Customer Hold', 'Credit Loan'].includes(payMethod)" class="gift-hint">
-            Add {{ fmt(giftShortBy) }} more to earn a free gift
+          <div v-if="giftProductIds.size > 0 && cart.length > 0 && !['Customer Hold', 'Credit Loan'].includes(payMethod)" class="gift-hint">
+            Add {{ fmt(giftShortBy) }} more to earn {{ giftsEarned > 0 ? 'another' : 'a' }} free gift
           </div>
         </div>
       </div>
@@ -1160,8 +1178,8 @@ onMounted(async () => {
         <div class="gift-modal">
           <div class="gift-modal-head">
             <div>
-              <div class="gift-modal-title">Choose a free gift</div>
-              <div class="gift-modal-sub">One gift per bill · bills of {{ fmt(giftMinAmount) }} or more</div>
+              <div class="gift-modal-title">Choose a free gift ({{ selectedGifts.length }} of {{ giftsEarned }} chosen)</div>
+              <div class="gift-modal-sub">One gift for every {{ fmt(giftMinAmount) }} in the bill</div>
             </div>
             <button class="gift-x" @click="showGiftPicker = false">✕</button>
           </div>
@@ -1187,7 +1205,7 @@ onMounted(async () => {
                 <div class="cart-name">{{ g.name }}</div>
                 <div class="cart-sku">{{ g.sku }}</div>
               </div>
-              <span class="gift-stock">{{ g.stock > 0 ? g.stock + ' in stock' : 'Out of stock' }}</span>
+              <span class="gift-stock">{{ g.stock > 0 ? g.stock + ' in stock' : 'Out of stock' }}<template v-if="giftsOfProduct(g.id) > 0"> · {{ giftsOfProduct(g.id) }} chosen</template></span>
             </button>
           </div>
         </div>
