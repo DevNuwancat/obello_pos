@@ -23,6 +23,7 @@ import { useCustomerTags } from '../composables/useCustomerTags'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { downloadDigitalInvoice, findInvoiceCustomer } from '../lib/digitalInvoice'
+import { hasInvoiceFolder, chooseInvoiceFolder } from '../lib/invoiceFolder'
 
 
 // ──────────────────────────────────────────────
@@ -1353,8 +1354,10 @@ async function downloadInvoice(t: Transaction) {
   if (invoiceBusyId.value) return
   invoiceBusyId.value = t.id
   try {
+    // First time on this computer: ask where invoices should be kept (must happen right after the click)
+    if (!(await hasInvoiceFolder())) await chooseInvoiceFolder()
     const customer = await findInvoiceCustomer(t.customer_id, t.invoice_no)
-    await downloadDigitalInvoice({
+    const savedMsg = await downloadDigitalInvoice({
       invoiceNo: t.invoice_no,
       date: t.created_at,
       cashier: t.users?.full_name ?? '',
@@ -1379,6 +1382,7 @@ async function downloadInvoice(t: Transaction) {
       total: t.total,
       paid: t.amount_paid,
     })
+    showToastMsg(savedMsg)
   } catch (e: any) {
     console.warn('Could not make the digital invoice:', e)
     showToastMsg('Could not make the invoice: ' + (e?.message ?? 'unknown error'))

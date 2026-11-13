@@ -13,6 +13,7 @@
 */
 import jsPDF from 'jspdf'
 import { supabase } from './supabase'
+import { saveInvoiceToFolder, INVOICE_FOLDER_NAME } from './invoiceFolder'
 
 import logoUrl from '../assets/invoice/logo.png'
 import qrUrl from '../assets/invoice/qr.png'
@@ -390,10 +391,20 @@ export async function buildInvoicePdf(inv: InvoiceData): Promise<jsPDF> {
   return doc
 }
 
-/** Makes the invoice and saves it to the computer's Downloads folder as <invoice no>.pdf */
-export async function downloadDigitalInvoice(inv: InvoiceData): Promise<void> {
+/**
+ * Makes the invoice and saves it as <invoice no>.pdf (no date in the name).
+ *   • If a folder was chosen → into  "Digital Invoice Obello System"  inside it (made if missing)
+ *   • Otherwise            → a normal browser download
+ * Returns a short sentence telling the cashier where it went.
+ */
+export async function downloadDigitalInvoice(inv: InvoiceData): Promise<string> {
   const doc = await buildInvoicePdf(inv)
-  doc.save(`${inv.invoiceNo}.pdf`)
+  const fileName = `${inv.invoiceNo}.pdf`
+  if (await saveInvoiceToFolder(doc.output('blob'), fileName)) {
+    return `Invoice ${inv.invoiceNo} saved in the "${INVOICE_FOLDER_NAME}" folder`
+  }
+  doc.save(fileName)
+  return `Invoice ${inv.invoiceNo} downloaded`
 }
 
 // ──────────────────────────────────────────────
