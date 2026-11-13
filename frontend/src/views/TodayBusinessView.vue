@@ -22,6 +22,7 @@ import TagChips from '../components/TagChips.vue'
 import { useCustomerTags } from '../composables/useCustomerTags'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { downloadDigitalInvoice, findInvoiceCustomer } from '../lib/digitalInvoice'
 
 
 // ──────────────────────────────────────────────
@@ -1344,6 +1345,48 @@ async function exportMonthlyPDF() {
 // ──────────────────────────────────────────────
 // 10. TOAST
 // ──────────────────────────────────────────────
+// ── DIGITAL INVOICE (PDF) for one bill ──
+// Same design as the invoice made at the cashier (design/inovice_design). Works for any bill on
+// screen — Cash, Card, Bank and Later Pay. Items, gifts and the customer are read from what is loaded.
+const invoiceBusyId = ref<string | null>(null)
+async function downloadInvoice(t: Transaction) {
+  if (invoiceBusyId.value) return
+  invoiceBusyId.value = t.id
+  try {
+    const customer = await findInvoiceCustomer(t.customer_id, t.invoice_no)
+    await downloadDigitalInvoice({
+      invoiceNo: t.invoice_no,
+      date: t.created_at,
+      cashier: t.users?.full_name ?? '',
+      payment: t.payment_method,
+      cancelled: t.status === 'void',
+      customer,
+      items: [
+        ...(itemsByTxn.value.get(t.id) ?? []).map(i => ({
+          name: i.product_name,
+          sku: i.sku,
+          rate: i.discount_label,
+          qty: i.qty,
+          unitPrice: i.unit_price,
+          amount: i.line_total,
+        })),
+        ...(giftByTxn.value.get(t.id) ?? []).map(g => ({
+          name: g.product_name, sku: g.sku, qty: g.qty, unitPrice: 0, amount: 0, isGift: true,
+        })),
+      ],
+      subtotal: t.subtotal,
+      discount: t.discount_amount,
+      total: t.total,
+      paid: t.amount_paid,
+    })
+  } catch (e: any) {
+    console.warn('Could not make the digital invoice:', e)
+    showToastMsg('Could not make the invoice: ' + (e?.message ?? 'unknown error'))
+  } finally {
+    invoiceBusyId.value = null
+  }
+}
+
 const toastMsg     = ref('')
 const toastVisible = ref(false)
 
@@ -1753,12 +1796,13 @@ onMounted(() => {
                 <th class="center">Printed</th>
                 <th class="center">Bill Discount</th>
                 <th style="text-align:right; padding-right:20px;">Total (Rs.)</th>
+                <th class="center">Invoice</th>
               </tr>
             </thead>
 
             <tbody>
               <tr v-if="filteredTransactions.length === 0">
-                <td colspan="11" class="empty-row">No sales yet today</td>
+                <td colspan="12" class="empty-row">No sales yet today</td>
               </tr>
 
               <template v-for="(t, index) in filteredTransactions" :key="t.id">
@@ -1805,11 +1849,23 @@ onMounted(() => {
                     <span v-else class="no-discount">No discount</span>
                   </td>
                   <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(t.total) }}</td>
+                  <!-- Download this bill as a digital invoice (PDF) -->
+                  <td class="center-cell">
+                    <button
+                      class="invoice-btn"
+                      :disabled="invoiceBusyId === t.id"
+                      title="Download digital invoice (PDF)"
+                      @click.stop="downloadInvoice(t)"
+                    >
+                      <svg v-if="invoiceBusyId !== t.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                      <span v-else class="invoice-wait">…</span>
+                    </button>
+                  </td>
                 </tr>
 
                 <!-- ── EXPANDED PANEL: every item in this bill ── -->
                 <tr v-if="expandedIds.has(t.id)" class="expand-panel-row">
-                  <td colspan="11">
+                  <td colspan="12">
                     <div class="expand-panel">
                       <div
                         v-for="item in (itemsByTxn.get(t.id) ?? [])"
@@ -2319,6 +2375,15 @@ onMounted(() => {
   transition: color .15s, background .15s, border-color .15s;
 }
 .pay-edit-btn:hover { color: var(--text); background: var(--surface2); border-color: var(--text-muted); }
+.invoice-btn {
+  width: 28px; height: 28px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  border: 1px solid var(--border); background: transparent; color: var(--text-sub);
+  transition: color .15s, background .15s, border-color .15s;
+}
+.invoice-btn:hover:not(:disabled) { color: var(--text); background: var(--surface2); border-color: var(--text-muted); }
+.invoice-btn:disabled { opacity: .6; cursor: wait; }
+.invoice-wait { font-weight: 700; line-height: 1; }
 .pay-edited { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--amber-bg); color: var(--amber); vertical-align: middle; }
 .pay-change-info { margin: 10px 0; padding: 10px 14px; border-radius: 10px; background: var(--amber-bg); border: 1px solid var(--amber); color: var(--text); font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
 .pay-change-title { display: flex; align-items: center; gap: 7px; font-weight: 600; color: var(--amber); }

@@ -5,6 +5,7 @@ import PayLaterModal from '../components/modals/PayLaterModal.vue'
 import ProductThumb from '../components/ProductThumb.vue'
 import { useAuthStore } from "../store/auth"
 import { supabase, ensureFreshSession } from '../lib/supabase'
+import { downloadDigitalInvoice, findInvoiceCustomer } from '../lib/digitalInvoice'
 
 
 
@@ -87,6 +88,11 @@ const discount    = ref(0)
 const amountPaid  = ref(0)
 const payMethod   = ref('Cash')
 const printReceipt = ref(true)
+// "Digital Invoice": after the sale, also save a PDF invoice (design/inovice_design) to this computer.
+// It works for Cash / Card / Bank AND Later Pay. Holds and loans are not bills, so no invoice for them.
+// Remembered in localStorage so the cashier does not have to tick it every time.
+const digitalInvoice = ref(localStorage.getItem('digitalInvoice') === '1')
+watch(digitalInvoice, (v) => localStorage.setItem('digitalInvoice', v ? '1' : '0'))
 const checkoutDone = ref(false)
 const checkingOut  = ref(false)
 const showPayLaterModal = ref(false)
@@ -111,6 +117,7 @@ const payIcons: Record<string, string> = {
   'Later Pay': '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
 }
 
+const noInvoiceMethod = computed(() => payMethod.value === 'Customer Hold' || payMethod.value === 'Credit Loan')
 const noReceiptMethod = computed(() => payMethod.value === 'Later Pay' || payMethod.value === 'Customer Hold' || payMethod.value === 'Credit Loan')
 
 // When Later Pay is selected, turn off "Print with Receipt" automatically —
@@ -796,6 +803,38 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
         console.warn('Could not open cash drawer:', e)
       }
     }
+
+    // 5. Digital invoice (PDF) — only if the cashier ticked it. A problem here never undoes the sale.
+    if (digitalInvoice.value && !noInvoiceMethod.value) {
+      try {
+        const customer = await findInvoiceCustomer(customerId ?? loyaltyCustomerId ?? null, invoiceNo)
+        await downloadDigitalInvoice({
+          invoiceNo,
+          date: txn.created_at ?? new Date(),
+          cashier: auth.userName ?? '',
+          payment: payMethod.value,
+          customer,
+          items: [
+            ...itemRows.map(i => ({
+              name: i.product_name,
+              sku: i.sku,
+              rate: i.discount_label,
+              qty: i.qty,
+              unitPrice: i.unit_price,
+              amount: i.line_total,
+            })),
+            ...giftsForBill.map(g => ({ name: g.name, sku: g.sku, qty: 1, unitPrice: 0, amount: 0, isGift: true })),
+          ],
+          subtotal: subtotal.value,
+          discount: discountAmt.value,
+          total: total.value,
+          paid: Number(amountPaid.value) || 0,
+        })
+      } catch (e) {
+        console.warn('Could not make the digital invoice:', e)
+        showToast('⚠️ Sale saved, but the digital invoice failed. You can download it later from Today Business.')
+      }
+    }
   } finally {
     checkingOut.value = false
   }
@@ -1101,6 +1140,8 @@ onMounted(async () => {
           <span class="loyalty-hint">Cash · Card · Bank</span>
         </div>
 
+        <!-- Two options side by side: print the receipt (left) · make a digital invoice PDF (right) -->
+        <div class="receipt-options">
         <!-- Disabled for Later Pay — receipt is controlled in the Pay Later modal -->
         <div
           class="receipt-row"
@@ -1116,6 +1157,20 @@ onMounted(async () => {
             <span v-else-if="payMethod === 'Customer Hold'" class="receipt-note">(holds are not billed)</span>
             <span v-else-if="payMethod === 'Credit Loan'" class="receipt-note">(loans are not billed)</span>
           </span>
+        </div>
+
+        <!-- Digital invoice: a PDF saved on this computer after checkout (works for Later Pay too) -->
+        <div
+          class="receipt-row invoice-row"
+          :class="{ 'receipt-disabled': noInvoiceMethod }"
+          :title="noInvoiceMethod ? 'Holds and loans are not billed' : 'Save a PDF invoice after checkout'"
+          @click="!noInvoiceMethod && (digitalInvoice = !digitalInvoice)"
+        >
+          <div class="checkbox" :class="{ checked: digitalInvoice && !noInvoiceMethod }">
+            <svg v-if="digitalInvoice && !noInvoiceMethod" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <span class="receipt-label">Digital Invoice</span>
+        </div>
         </div>
       </div>
 
@@ -1903,13 +1958,21 @@ onMounted(async () => {
 .loyalty-title { font-size: 12.5px; font-weight: 600; color: var(--text); }
 .loyalty-hint  { margin-left: auto; font-size: 10.5px; color: var(--text-muted); }
 
+/* the line above + spacing now belong to the wrapper, which holds both checkboxes */
+.receipt-options {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
 .receipt-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
   cursor: pointer;
   user-select: none;
 }
