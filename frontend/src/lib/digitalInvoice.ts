@@ -206,7 +206,11 @@ export async function buildInvoicePdf(inv: InvoiceData): Promise<jsPDF> {
   const paid = Number(inv.paid) || 0
   const due = Math.max(0, total - paid)
   const change = Math.max(0, paid - total)
-  const status = inv.cancelled ? 'Cancelled' : paid + 0.005 >= total ? 'Paid' : paid > 0 ? 'Part Paid' : 'Unpaid'
+  // Later Pay means the customer took the goods and will pay later → always "Not Paid" on the invoice.
+  const isLaterPay = payLabel(inv.payment) === 'Later Pay'
+  const status = inv.cancelled ? 'Cancelled'
+    : isLaterPay ? 'Not Paid'
+    : paid + 0.005 >= total ? 'Paid' : paid > 0 ? 'Part Paid' : 'Not Paid'
   const when = new Date(inv.date)
   const dateStr = when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
   const timeStr = when.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
@@ -410,11 +414,18 @@ export async function buildInvoicePdf(inv: InvoiceData): Promise<jsPDF> {
   return doc
 }
 
-/** Makes the invoice and downloads it as <invoice no>.pdf (no date in the name) into the Downloads folder. */
+/**
+ * Makes the invoice and downloads it into the Downloads folder.
+ * The file name is the bill's date, then the invoice number:  2026-11-13_INV-1794546278839.pdf
+ * (year-month-day, so files sort by date in the folder)
+ */
 export async function downloadDigitalInvoice(inv: InvoiceData): Promise<string> {
   const doc = await buildInvoicePdf(inv)
-  doc.save(`${inv.invoiceNo}.pdf`)
-  return `Invoice ${inv.invoiceNo} downloaded`
+  const d = new Date(inv.date)
+  const day = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`
+  const fileName = `${day}_${inv.invoiceNo}.pdf`
+  doc.save(fileName)
+  return `Invoice saved: ${fileName}`
 }
 
 // ──────────────────────────────────────────────
