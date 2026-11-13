@@ -6,7 +6,6 @@ import ProductThumb from '../components/ProductThumb.vue'
 import { useAuthStore } from "../store/auth"
 import { supabase, ensureFreshSession } from '../lib/supabase'
 import { downloadDigitalInvoice, findInvoiceCustomer } from '../lib/digitalInvoice'
-import { hasInvoiceFolder, chooseInvoiceFolder } from '../lib/invoiceFolder'
 
 
 
@@ -118,18 +117,6 @@ const payIcons: Record<string, string> = {
   'Later Pay': '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
 }
 
-// Ticking the box: the very first time on this computer, ask WHERE the invoices should be kept.
-// (It must happen right here, from the click — the browser only allows the folder window after a click.)
-async function toggleDigitalInvoice() {
-  if (noInvoiceMethod.value) return
-  digitalInvoice.value = !digitalInvoice.value
-  if (digitalInvoice.value && !(await hasInvoiceFolder())) {
-    const picked = await chooseInvoiceFolder()
-    showToast(picked
-      ? 'Invoices will be saved in a "Digital Invoice Obello System" folder there'
-      : 'No folder chosen — invoices will go to Downloads')
-  }
-}
 const noInvoiceMethod = computed(() => payMethod.value === 'Customer Hold' || payMethod.value === 'Credit Loan')
 const noReceiptMethod = computed(() => payMethod.value === 'Later Pay' || payMethod.value === 'Customer Hold' || payMethod.value === 'Credit Loan')
 
@@ -831,12 +818,13 @@ async function handleCheckout(customerId?: string, receiptOverride?: boolean, lo
             ...itemRows.map(i => ({
               name: i.product_name,
               sku: i.sku,
+              barcode: cart.value.find(c => c.id === i.product_id)?.barcode ?? null,
               rate: i.discount_label,
               qty: i.qty,
               unitPrice: i.unit_price,
               amount: i.line_total,
             })),
-            ...giftsForBill.map(g => ({ name: g.name, sku: g.sku, qty: 1, unitPrice: 0, amount: 0, isGift: true })),
+            ...giftsForBill.map(g => ({ name: g.name, sku: g.sku, barcode: g.barcode, qty: 1, unitPrice: 0, amount: 0, isGift: true })),
           ],
           subtotal: subtotal.value,
           discount: discountAmt.value,
@@ -1178,7 +1166,7 @@ onMounted(async () => {
           class="receipt-row invoice-row"
           :class="{ 'receipt-disabled': noInvoiceMethod }"
           :title="noInvoiceMethod ? 'Holds and loans are not billed' : 'Save a PDF invoice after checkout'"
-          @click="toggleDigitalInvoice"
+          @click="!noInvoiceMethod && (digitalInvoice = !digitalInvoice)"
         >
           <div class="checkbox" :class="{ checked: digitalInvoice && !noInvoiceMethod }">
             <svg v-if="digitalInvoice && !noInvoiceMethod" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>

@@ -13,7 +13,6 @@
 */
 import jsPDF from 'jspdf'
 import { supabase } from './supabase'
-import { saveInvoiceToFolder, INVOICE_FOLDER_NAME } from './invoiceFolder'
 
 import logoUrl from '../assets/invoice/logo.png'
 import qrUrl from '../assets/invoice/qr.png'
@@ -34,6 +33,7 @@ import monoMediumUrl from '../assets/invoice/fonts/JetBrainsMono-Medium.ttf?url'
 export interface InvoiceItem {
   name: string
   sku?: string | null
+  barcode?: string | null   // printed after the SKU:  SKU | barcode
   /** 'Discount' | 'Super' | 'Original' (how the app saves it) or any text; shown as Promotional / Special / Regular */
   rate?: string | null
   qty: number
@@ -268,15 +268,24 @@ export async function buildInvoicePdf(inv: InvoiceData): Promise<jsPDF> {
 
   // ── One row of the table. Returns where the next row starts. ──
   const ROW_GAP = 70
-  function rowHeight(it: InvoiceItem): number {
-    return ROW_GAP + (lines(it.name, 258, { size: 13.6 }).length - 1) * 18
+  // "squeeze" = how many pixels every row is made shorter so a bill that is only
+  // just too long still keeps its totals on the same page (worked out below, 0 = normal)
+  let squeeze = 0
+  function naturalHeight(it: InvoiceItem): number {
+    // taller when the name wraps, and when there is a barcode line under the SKU
+    return ROW_GAP + (lines(it.name, 258, { size: 13.6 }).length - 1) * 18 + (it.sku && it.barcode ? 8 : 0)
   }
+  function rowHeight(it: InvoiceItem): number { return naturalHeight(it) - squeeze }
   function drawRow(it: InvoiceItem, no: number, top: number): number {
     const nameLines = lines(it.name, 258, { size: 13.6 })
     const h = rowHeight(it)
-    const mid = top + 28 + ((nameLines.length - 1) * 18) / 2   // middle of the row for the number columns
-    nameLines.forEach((l, i) => text(l, 119, top + 28 + i * 18, { size: 13.6 }))
-    text(it.sku || '', 119, top + 28 + nameLines.length * 18 - 2 + 2, { font: 'Mono', size: 12.5, color: GREY })
+    const first = top + 28 - squeeze / 2                       // y of the first line (squeezed rows start a little higher)
+    const mid = first + ((nameLines.length - 1) * 18) / 2      // middle of the row for the number columns
+    nameLines.forEach((l, i) => text(l, 119, first + i * 18, { size: 13.6 }))
+    // under the name: the SKU, and under the SKU the barcode number
+    const codeY = first + nameLines.length * 18
+    if (it.sku) text(it.sku, 119, codeY, { font: 'Mono', size: 12.5, color: GREY })
+    if (it.barcode) text(it.barcode, 119, codeY + (it.sku ? 15 : 0), { font: 'Mono', size: 12.5, color: GREY })
     text(two(no), 82, mid, { font: 'Mono', size: 15.5 })
     text(rateLabel(it.rate, it.isGift), 431, mid, { size: 13.6, align: 'center' })
     text(two(it.qty), 519, mid, { font: 'Mono', size: 15.5, align: 'center' })
@@ -355,6 +364,16 @@ export async function buildInvoicePdf(inv: InvoiceData): Promise<jsPDF> {
   const pages: Page[] = [{ rows: [], first: true }]
   let cursor = 0
   {
+    // If all rows would fit on ONE page after squeezing them a little (max 18px each), do that
+    // instead of pushing the totals onto a second page.
+    const natural = items.reduce((sum, it) => sum + naturalHeight(it), 0)
+    const room = FOOTER_TOP - TOTALS_H - (337 + 39)
+    if (items.length > 0 && natural > room) {
+      const need = Math.ceil((natural - room) / items.length)
+      if (need <= 18) squeeze = need
+    }
+  }
+  {
     let y = 337 + 39                                     // where the first row starts on page 1
     items.forEach((it, i) => {
       const h = rowHeight(it)
@@ -391,19 +410,10 @@ export async function buildInvoicePdf(inv: InvoiceData): Promise<jsPDF> {
   return doc
 }
 
-/**
- * Makes the invoice and saves it as <invoice no>.pdf (no date in the name).
- *   • If a folder was chosen → into  "Digital Invoice Obello System"  inside it (made if missing)
- *   • Otherwise            → a normal browser download
- * Returns a short sentence telling the cashier where it went.
- */
+/** Makes the invoice and downloads it as <invoice no>.pdf (no date in the name) into the Downloads folder. */
 export async function downloadDigitalInvoice(inv: InvoiceData): Promise<string> {
   const doc = await buildInvoicePdf(inv)
-  const fileName = `${inv.invoiceNo}.pdf`
-  if (await saveInvoiceToFolder(doc.output('blob'), fileName)) {
-    return `Invoice ${inv.invoiceNo} saved in the "${INVOICE_FOLDER_NAME}" folder`
-  }
-  doc.save(fileName)
+  doc.save(`${inv.invoiceNo}.pdf`)
   return `Invoice ${inv.invoiceNo} downloaded`
 }
 

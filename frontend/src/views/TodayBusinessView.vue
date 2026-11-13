@@ -23,7 +23,6 @@ import { useCustomerTags } from '../composables/useCustomerTags'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { downloadDigitalInvoice, findInvoiceCustomer } from '../lib/digitalInvoice'
-import { hasInvoiceFolder, chooseInvoiceFolder } from '../lib/invoiceFolder'
 
 
 // ──────────────────────────────────────────────
@@ -57,6 +56,7 @@ interface Transaction {
 interface FreeGiftRow {
   id: string
   transaction_id: string
+  product_id?: string | null
   invoice_no: string
   product_name: string
   sku: string | null
@@ -93,7 +93,7 @@ interface TransactionItemRow {
   unit_price: number
   discount_label: string | null
   line_total: number
-  products: { cost_price: number; image_url: string | null; selling_price?: number; sub_category?: string | null } | null
+  products: { cost_price: number; image_url: string | null; selling_price?: number; sub_category?: string | null; barcode?: string | null } | null
 }
 
 // ──────────────────────────────────────────────
@@ -199,7 +199,7 @@ async function fetchReportData() {
     if (ids.length > 0) {
       const { data: itemData, error: itemError } = await supabase
         .from('transaction_items')
-        .select('*, products(cost_price, image_url, selling_price, sub_category)')
+        .select('*, products(cost_price, image_url, selling_price, sub_category, barcode)')
         .in('transaction_id', ids)
       if (itemError) { fetchError.value = itemError.message; markError(); return }
       itemRows.value = (itemData ?? []) as unknown as TransactionItemRow[]
@@ -1354,9 +1354,15 @@ async function downloadInvoice(t: Transaction) {
   if (invoiceBusyId.value) return
   invoiceBusyId.value = t.id
   try {
-    // First time on this computer: ask where invoices should be kept (must happen right after the click)
-    if (!(await hasInvoiceFolder())) await chooseInvoiceFolder()
     const customer = await findInvoiceCustomer(t.customer_id, t.invoice_no)
+    // A free gift row keeps no barcode of its own, so look it up on the product
+    const gifts = giftByTxn.value.get(t.id) ?? []
+    const giftIds = gifts.map(g => g.product_id).filter((x): x is string => !!x)
+    const giftBarcode = new Map<string, string | null>()
+    if (giftIds.length > 0) {
+      const { data } = await supabase.from('products').select('id, barcode').in('id', giftIds)
+      for (const p of data ?? []) giftBarcode.set(p.id, p.barcode)
+    }
     const savedMsg = await downloadDigitalInvoice({
       invoiceNo: t.invoice_no,
       date: t.created_at,
@@ -1368,13 +1374,14 @@ async function downloadInvoice(t: Transaction) {
         ...(itemsByTxn.value.get(t.id) ?? []).map(i => ({
           name: i.product_name,
           sku: i.sku,
+          barcode: i.products?.barcode ?? null,
           rate: i.discount_label,
           qty: i.qty,
           unitPrice: i.unit_price,
           amount: i.line_total,
         })),
-        ...(giftByTxn.value.get(t.id) ?? []).map(g => ({
-          name: g.product_name, sku: g.sku, qty: g.qty, unitPrice: 0, amount: 0, isGift: true,
+        ...gifts.map(g => ({
+          name: g.product_name, sku: g.sku, barcode: g.product_id ? giftBarcode.get(g.product_id) ?? null : null, qty: g.qty, unitPrice: 0, amount: 0, isGift: true,
         })),
       ],
       subtotal: t.subtotal,
@@ -1800,13 +1807,12 @@ onMounted(() => {
                 <th class="center">Printed</th>
                 <th class="center">Bill Discount</th>
                 <th style="text-align:right; padding-right:20px;">Total (Rs.)</th>
-                <th class="center">Invoice</th>
               </tr>
             </thead>
 
             <tbody>
               <tr v-if="filteredTransactions.length === 0">
-                <td colspan="12" class="empty-row">No sales yet today</td>
+                <td colspan="11" class="empty-row">No sales yet today</td>
               </tr>
 
               <template v-for="(t, index) in filteredTransactions" :key="t.id">
@@ -1853,23 +1859,11 @@ onMounted(() => {
                     <span v-else class="no-discount">No discount</span>
                   </td>
                   <td class="price-cell" style="text-align:right; padding-right:20px;">{{ fmtRs(t.total) }}</td>
-                  <!-- Download this bill as a digital invoice (PDF) -->
-                  <td class="center-cell">
-                    <button
-                      class="invoice-btn"
-                      :disabled="invoiceBusyId === t.id"
-                      title="Download digital invoice (PDF)"
-                      @click.stop="downloadInvoice(t)"
-                    >
-                      <svg v-if="invoiceBusyId !== t.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                      <span v-else class="invoice-wait">…</span>
-                    </button>
-                  </td>
                 </tr>
 
                 <!-- ── EXPANDED PANEL: every item in this bill ── -->
                 <tr v-if="expandedIds.has(t.id)" class="expand-panel-row">
-                  <td colspan="12">
+                  <td colspan="11">
                     <div class="expand-panel">
                       <div
                         v-for="item in (itemsByTxn.get(t.id) ?? [])"
@@ -1990,6 +1984,15 @@ onMounted(() => {
 
                       <!-- Reprint this bill — sits under its item list -->
                       <div v-if="t.status !== 'void'" class="expand-print-row">
+                        <!-- Download this bill as a digital invoice (PDF) -->
+                        <button
+                          class="btn-reprint"
+                          :disabled="invoiceBusyId === t.id"
+                          @click="downloadInvoice(t)"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                          {{ invoiceBusyId === t.id ? 'Making…' : 'Invoice' }}
+                        </button>
                         <button
                           class="btn-reprint"
                           :disabled="printingId === t.id"
@@ -2379,15 +2382,6 @@ onMounted(() => {
   transition: color .15s, background .15s, border-color .15s;
 }
 .pay-edit-btn:hover { color: var(--text); background: var(--surface2); border-color: var(--text-muted); }
-.invoice-btn {
-  width: 28px; height: 28px; border-radius: 8px;
-  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
-  border: 1px solid var(--border); background: transparent; color: var(--text-sub);
-  transition: color .15s, background .15s, border-color .15s;
-}
-.invoice-btn:hover:not(:disabled) { color: var(--text); background: var(--surface2); border-color: var(--text-muted); }
-.invoice-btn:disabled { opacity: .6; cursor: wait; }
-.invoice-wait { font-weight: 700; line-height: 1; }
 .pay-edited { margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--amber-bg); color: var(--amber); vertical-align: middle; }
 .pay-change-info { margin: 10px 0; padding: 10px 14px; border-radius: 10px; background: var(--amber-bg); border: 1px solid var(--amber); color: var(--text); font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
 .pay-change-title { display: flex; align-items: center; gap: 7px; font-weight: 600; color: var(--amber); }
@@ -2668,7 +2662,7 @@ tbody td:first-child { padding-left: 20px; color: var(--text-sub); font-family: 
 
 /* ── Reprint row + button — sits under the item list in the expanded panel ── */
 .expand-print-row {
-  display: flex; justify-content: flex-end;
+  display: flex; justify-content: flex-end; gap: 8px;
   margin-top: 10px; padding-top: 10px;
   border-top: 1px solid var(--border);
 }
